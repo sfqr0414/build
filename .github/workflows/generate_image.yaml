@@ -4,7 +4,6 @@ name: Generate OrangePi5-Max Gnome Image
 # 触发条件：仅手动触发
 on:
   workflow_dispatch:
-    # 可选：添加自定义输入参数（如需灵活调整编译参数可启用）
     inputs:
       board:
         description: '目标开发板型号'
@@ -12,9 +11,9 @@ on:
         default: 'orangepi5-max'
         type: string
       kernel:
-        description: '内核版本'
+        description: '内核版本（如6.8/6.6.15）'
         required: true
-        default: 'vendor'
+        default: '6.8'  # 默认指定6.8内核版本
         type: string
       release:
         description: '发行版'
@@ -26,55 +25,58 @@ on:
         required: true
         default: 'gnome'
         type: string
+
 # 作业定义
 jobs:
   build-and-upload-image:
-    # 运行环境：Ubuntu 24.04
     runs-on: ubuntu-24.04
-    # 设置超时时间（编译镜像耗时较长，建议设为6小时）
-    timeout-minutes: 360
+    timeout-minutes: 360  # 编译镜像超时时间（6小时）
 
     steps:
       - name: Get more disk space
-        uses: jlumbroso/free-disk-space@main
-        with:
-          tool-cache: false
-          android: true
-          dotnet: true
-          haskell: true
-          large-packages: true
-          swap-storage: true
-
-      # 步骤1：检出代码仓库（确保compile.sh在仓库根目录）
+        run: |
+          sudo rm -rf /home/runner/actions-runner/cached/_diag/* || true
+          sudo rm -rf /home/runner/_diag/* || true
+          sudo docker system prune -a -f || true
+          sudo apt-get clean
+          sudo apt-get autoremove -y --purge
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/share/boost || true
+          sudo rm -rf /var/lib/apt/lists/* || true
+          sudo rm -rf ${{ github.workspace }}/build/* ${{ github.workspace }}/images/* || true
+          sudo rm -rf /tmp/* /var/tmp/* || true
+          df -h
+          
+      # 步骤1：检出代码仓库
       - name: Checkout Repository
         uses: actions/checkout@v4
         with:
-          # 如需拉取子模块（如有）请启用
-          # submodules: recursive
           fetch-depth: 0
 
-      # 步骤2：安装编译依赖（根据compile.sh实际需求调整）
+      # 步骤2：安装编译依赖
       - name: Install Build Dependencies
         run: |
           sudo apt update -y
           sudo apt upgrade -y
-          # 通用编译依赖（Armbian/OrangePi镜像编译常用）
+          # Armbian/OrangePi 镜像编译完整依赖
           sudo apt install -y \
             git build-essential curl wget unzip zip \
             qemu-user-static binfmt-support python3 python3-pip \
             rsync bc bison flex libssl-dev parted dosfstools \
-            squashfs-tools imagemagick jq zstd
+            squashfs-tools imagemagick jq zstd \
+            libncurses5-dev libncursesw5-dev libelf-dev dwarves \
+            u-boot-tools device-tree-compiler
 
       # 步骤3：赋予compile.sh执行权限
       - name: Make compile.sh Executable
         run: chmod +x ./compile.sh
 
-      # 步骤4：执行编译脚本生成镜像
+      # 步骤4：执行编译脚本（核心：指定6.8内核版本）
       - name: Build OrangePi Image
         run: |
           ./compile.sh build \
             BOARD=${{ github.event.inputs.board }} \
-            BRANCH=${{ github.event.inputs.kernel }} \
+            BRANCH=edge \  # Armbian构建分支（固定为edge，与内核版本无关）
+            KERNEL_VERSION=${{ github.event.inputs.kernel }} \  # 指定6.8内核版本
             BUILD_DESKTOP=yes \
             BUILD_MINIMAL=no \
             DESKTOP_APPGROUPS_SELECTED='browsers chat desktop_tools editors email internet multimedia office programming remote_desktop' \
@@ -82,34 +84,27 @@ jobs:
             DESKTOP_ENVIRONMENT_CONFIG_NAME=config_base \
             KERNEL_CONFIGURE=no \
             RELEASE=${{ github.event.inputs.release }}
-        # 可选：输出编译日志到文件（便于调试）
         env:
-          # 强制输出详细日志
-          VERBOSE: 1
+          VERBOSE: 1  # 输出详细编译日志，便于调试
 
-      # 步骤5：列出生成的镜像文件（便于确认路径，调试用）
+      # 步骤5：列出生成的镜像文件（调试用）
       - name: List Generated Image Files
         run: |
-          echo "=== 列出output目录结构 ==="
+          echo "=== 输出目录结构 ==="
           ls -la ./output/ || true
-          echo "=== 列出images目录文件 ==="
+          echo "=== 镜像文件列表 ==="
           ls -la ./output/images/ || true
 
-      # 步骤6：上传镜像文件到Artifacts
+      # 步骤6：上传镜像产物
       - name: Upload Image Artifacts
         uses: actions/upload-artifact@v4
         with:
-          # Artifact名称（便于识别）
-          name: orangepi5-max-gnome-image-${{ github.run_id }}
-          # 镜像文件路径（根据compile.sh实际输出路径调整！）
-          # 常见路径：output/images/ 下的.img/.xz/.zip/.sha256sum等
+          name: orangepi5-max-gnome-image-${{ github.run_id }}-kernel-${{ github.event.inputs.kernel }}
           path: |
             ./output/images/*.img
             ./output/images/*.img.xz
             ./output/images/*.img.zip
             ./output/images/*.sha256sum
             ./output/images/*.md5sum
-          # 产物保留天数（默认90天，可根据需求调整）
           retention-days: 90
-          # 启用并行上传（加快大文件上传速度）
-          if-no-files-found: error  # 无文件时触发错误（避免漏传）
+          if-no-files-found: error  # 无镜像文件时触发错误，避免空产物

@@ -69,21 +69,21 @@ jobs:
       # 步骤3：赋予compile.sh执行权限
       - name: Make compile.sh Executable
         run: chmod +x ./compile.sh
-
-      # 步骤4：执行编译脚本（核心：指定6.8内核版本）
+      
+      # 步骤4：执行编译脚本（核心：指定6.8内核版本，修正参数格式）
       - name: Build OrangePi Image
         run: |
           ./compile.sh build \
-            BOARD=${{ github.event.inputs.board }} \
-            BRANCH=edge \  # Armbian构建分支（固定为edge，与内核版本无关）
-            KERNEL_VERSION=${{ github.event.inputs.kernel }} \  # 指定6.8内核版本
-            BUILD_DESKTOP=yes \
-            BUILD_MINIMAL=no \
-            DESKTOP_APPGROUPS_SELECTED='browsers chat desktop_tools editors email internet multimedia office programming remote_desktop' \
-            DESKTOP_ENVIRONMENT=${{ github.event.inputs.desktop_env }} \
-            DESKTOP_ENVIRONMENT_CONFIG_NAME=config_base \
-            KERNEL_CONFIGURE=no \
-            RELEASE=${{ github.event.inputs.release }}
+          BOARD=${{ github.event.inputs.board }} \
+          BRANCH=edge \
+          KERNEL_VERSION=${{ github.event.inputs.kernel }} \
+          BUILD_DESKTOP=yes \
+          BUILD_MINIMAL=no \
+          DESKTOP_APPGROUPS_SELECTED='browsers chat desktop_tools editors email internet multimedia office programming remote_desktop' \
+          DESKTOP_ENVIRONMENT=${{ github.event.inputs.desktop_env }} \
+          DESKTOP_ENVIRONMENT_CONFIG_NAME=config_base \
+          KERNEL_CONFIGURE=no \
+          RELEASE=${{ github.event.inputs.release }}
         env:
           VERBOSE: 1  # 输出详细编译日志，便于调试
 

@@ -14,7 +14,7 @@ on:
       kernel:
         description: '内核版本'
         required: true
-        default: 'vendor'
+        default: 'edge'
         type: string
       release:
         description: '发行版'
@@ -84,7 +84,8 @@ jobs:
             DESKTOP_ENVIRONMENT=${{ github.event.inputs.desktop_env }} \
             DESKTOP_ENVIRONMENT_CONFIG_NAME=config_base \
             KERNEL_CONFIGURE=no \
-            RELEASE=${{ github.event.inputs.release }}
+            RELEASE=${{ github.event.inputs.release }} \
+            ENABLE_EXTENSIONS=override-kernel 
         # 可选：输出编译日志到文件（便于调试）
         env:
           # 强制输出详细日志

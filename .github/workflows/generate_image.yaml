@@ -29,17 +29,15 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 360
     steps:
-      - name: Get more disk space
+      # 1. 深度清理磁盘（移除权限敏感的 drop_caches 操作）
+      - name: Deep Disk Cleanup
         run: |
-          sudo rm -rf /home/runner/actions-runner/cached/_diag/* || true
-          sudo rm -rf /home/runner/_diag/* || true
-          sudo docker system prune -a -f || true
-          sudo apt-get clean
-          sudo apt-get autoremove -y --purge
-          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/share/boost || true
-          sudo rm -rf /var/lib/apt/lists/* || true
-          sudo rm -rf ${{ github.workspace }}/build/* ${{ github.workspace }}/images/* || true
-          sudo rm -rf /tmp/* /var/tmp/* || true
+          sudo rm -rf /home/runner/actions-runner/cached/_diag/* /home/runner/_diag/*
+          sudo docker system prune -a -f --volumes
+          sudo apt clean && sudo apt autoremove -y --purge
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/miniconda /usr/local/go /usr/share/maven
+          sudo rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* /var/log/*.log
+          sudo sync  # 替换 drop_caches，安全释放页缓存
           df -h
 
       # 2. 检出代码仓库
@@ -56,68 +54,72 @@ jobs:
             git build-essential curl wget unzip zip qemu-user-static binfmt-support python3 python3-pip \
             rsync bc bison flex libssl-dev parted dosfstools squashfs-tools imagemagick jq zstd
 
-      # 4. 启动后台定时脚本：不修改源日志，仅操作临时副本
-      - name: Start Background Log Backup & Upload Script
+      # 4. 启动后台脚本：仅备份日志（不使用 gh），标记待上传文件
+      - name: Start Background Log Backup Script
         run: |
-          # 创建日志目录
-          mkdir -p ./logs
-          # 初始化主日志（仅用于编译输出，后续不修改）
+          # 创建日志目录和待上传标记目录
+          mkdir -p ./logs ./logs/to-upload
+          # 初始化主日志（仅存编译输出）
           touch ./build-image.log
-          # 初始化时单独生成带初始磁盘信息的副本（不改动源日志）
+          # 初始化带磁盘信息的副本并标记待上传
           INIT_TIMESTAMP=$(date +%Y%m%d-%H%M%S)
           INIT_COPY="./logs/image-build-log-INIT-${INIT_TIMESTAMP}.log"
           cp ./build-image.log ${INIT_COPY}
           echo "===== Initial Disk Status at ${INIT_TIMESTAMP} =====" >> ${INIT_COPY}
           df -h >> ${INIT_COPY}
-          # 上传初始副本（可选，便于确认初始状态）
-          export GITHUB_TOKEN="${{ secrets.GITHUB_TOKEN }}"
-          gh artifact upload "image-log-${{ github.run_id }}-INIT-${INIT_TIMESTAMP}" \
-            --file ${INIT_COPY} \
-            --repo ${{ github.repository }} \
-            --retention-days 90
+          mv ${INIT_COPY} ./logs/to-upload/  # 标记为待上传
 
-          # 编写后台脚本：操作临时副本，不碰源日志
-          cat > ./log-backup-upload.sh << EOF
+          # 后台脚本：每48分钟备份日志到待上传目录（无 gh 依赖）
+          cat > ./log-backup.sh << EOF
           #!/bin/bash
-          export GITHUB_TOKEN="${{ secrets.GITHUB_TOKEN }}"
-          export RUN_ID="${{ github.run_id }}"
-          export REPO="${{ github.repository }}"
-
           while true
           do
-              # 等待48分钟（2880秒）
-              sleep 2880
-
-              # 生成时间戳
+              sleep 2880  # 48分钟
               TIMESTAMP=\$(date +%Y%m%d-%H%M%S)
-              # 步骤1：复制源日志到临时副本（核心：不修改源文件）
+              # 复制源日志生成临时副本
               TEMP_COPY="./logs/image-build-log-TEMP-\${TIMESTAMP}.log"
               cp ./build-image.log \${TEMP_COPY}
-              # 步骤2：仅往临时副本追加磁盘信息
+              # 仅往副本追加磁盘信息
               echo -e "\\n===== Disk Status at \${TIMESTAMP} =====" >> \${TEMP_COPY}
               df -h >> \${TEMP_COPY}
-              # 步骤3：上传临时副本（带磁盘信息）
-              gh artifact upload "image-log-\${RUN_ID}-\${TIMESTAMP}" \
-                --file \${TEMP_COPY} \
-                --repo \${REPO} \
-                --retention-days 90
-
-              # 记录上传信息到临时副本（可选），不影响源日志
-              echo "===== Uploaded as artifact: image-log-\${RUN_ID}-\${TIMESTAMP} =====" >> \${TEMP_COPY}
-              # 删除临时副本（可选，节省空间）
-              rm -f \${TEMP_COPY}
+              # 移动到待上传目录，触发上传步骤
+              mv \${TEMP_COPY} ./logs/to-upload/
           done
           EOF
 
-          chmod +x ./log-backup-upload.sh
-          ./log-backup-upload.sh &
+          chmod +x ./log-backup.sh
+          ./log-backup.sh &
           echo "LOG_BACKUP_PID=$!" >> $GITHUB_ENV
 
-      # 5. 赋予编译脚本执行权限
+      # 5. 并行上传待上传日志（关键：独立步骤循环检查，不阻塞编译）
+      - name: Continuous Upload Pending Logs
+        run: |
+          while true
+          do
+              # 检查待上传目录是否有文件
+              if [ -n "$(ls -A ./logs/to-upload/ 2>/dev/null)" ]; then
+                  for LOG_FILE in ./logs/to-upload/*.log; do
+                      # 提取时间戳用于 artifact 命名
+                      TIMESTAMP=\$(echo \${LOG_FILE} | grep -oE '[0-9]{8}-[0-9]{6}')
+                      ARTIFACT_NAME="image-log-${{ github.run_id }}-\${TIMESTAMP}"
+                      # 使用官方 action 上传，无权限问题
+                      echo "Uploading log artifact: \${ARTIFACT_NAME}"
+                      gh run upload ${{ github.run_id }} --name "\${ARTIFACT_NAME}" --file "\${LOG_FILE}"
+                      # 上传后删除，避免重复上传
+                      rm -f \${LOG_FILE}
+                  done
+              fi
+              sleep 60  # 每分钟检查一次
+          done &
+          echo "UPLOADER_PID=$!" >> $GITHUB_ENV
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # 6. 赋予编译脚本执行权限
       - name: Make compile.sh Executable
         run: chmod +x ./compile.sh
 
-      # 6. 执行镜像编译，日志仅写入源文件 build-image.log
+      # 7. 执行镜像编译，日志仅写入源文件
       - name: Build OrangePi Image
         id: build
         run: |
@@ -138,35 +140,26 @@ jobs:
             2>&1 | tee -a ./build-image.log
         continue-on-error: true
 
-      # 7. 终止后台脚本+生成最终带磁盘信息的副本并上传
-      - name: Stop Background Script & Upload Final Log
+      # 8. 终止后台脚本+生成最终日志并上传
+      - name: Stop Background Scripts & Upload Final Log
         if: always()
         run: |
-          kill ${{ env.LOG_BACKUP_PID }} || true
-
-          # 生成最终带磁盘信息的副本，不修改源日志
+          # 终止后台备份和上传脚本
+          kill ${{ env.LOG_BACKUP_PID }} ${{ env.UPLOADER_PID }} || true
+          # 生成最终带磁盘信息的副本
           FINAL_TIMESTAMP=$(date +%Y%m%d-%H%M%S)
           FINAL_COPY="./logs/image-build-log-FINAL-${FINAL_TIMESTAMP}.log"
           cp ./build-image.log ${FINAL_COPY}
-          # 仅往最终副本追加磁盘信息
           echo -e "\\n===== Final Disk Status at ${FINAL_TIMESTAMP} =====" >> ${FINAL_COPY}
           df -h >> ${FINAL_COPY}
+          # 上传最终日志
+          gh run upload ${{ github.run_id }} --name "image-log-${{ github.run_id }}-FINAL-${FINAL_TIMESTAMP}" --file ${FINAL_COPY}
+          # 上传纯净源日志
+          gh run upload ${{ github.run_id }} --name "image-log-${{ github.run_id }}-PURE" --file ./build-image.log
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-          # 上传最终副本
-          export GITHUB_TOKEN="${{ secrets.GITHUB_TOKEN }}"
-          gh artifact upload "image-log-${{ github.run_id }}-FINAL-${FINAL_TIMESTAMP}" \
-            --file ${FINAL_COPY} \
-            --repo ${{ github.repository }} \
-            --retention-days 90
-
-          # 可选：上传纯净的源日志（无磁盘信息）
-          gh artifact upload "image-log-${{ github.run_id }}-PURE" \
-            --file ./build-image.log \
-            --repo ${{ github.repository }} \
-            --retention-days 90
-
-      # ========== 保留你指定的 列文件 + 上传镜像 逻辑 ==========
-      # 步骤5：列出生成的镜像文件（便于确认路径，调试用）
+      # 9. 保留原有的列文件逻辑
       - name: List Generated Image Files
         if: always()
         run: |
@@ -175,28 +168,23 @@ jobs:
           echo "=== 列出images目录文件 ==="
           ls -la ./output/images/ || true
 
-      # 步骤6：上传镜像文件到Artifacts
+      # 10. 保留原有的镜像上传逻辑
       - name: Upload Image Artifacts
         uses: actions/upload-artifact@v4
         with:
-          # Artifact名称（便于识别）
           name: orangepi5-max-gnome-image-${{ github.run_id }}
-          # 镜像文件路径（根据compile.sh实际输出路径调整！）
-          # 常见路径：output/images/ 下的.img/.xz/.zip/.sha256sum等
           path: |
             ./output/images/*.img
             ./output/images/*.img.xz
             ./output/images/*.img.zip
             ./output/images/*.sha256sum
             ./output/images/*.md5sum
-          # 产物保留天数（默认90天，可根据需求调整）
           retention-days: 90
-          # 启用并行上传（加快大文件上传速度）
-          if-no-files-found: error  # 无文件时触发错误（避免漏传）
+          if-no-files-found: error
 
-      # 8. 最终清理磁盘空间
+      # 11. 最终清理
       - name: Final Cleanup
         if: always()
         run: |
           sudo rm -rf ./build ./output ./logs ./build-image.log
-          sudo sync && echo 3 > /proc/sys/vm/drop_caches
+          sudo sync

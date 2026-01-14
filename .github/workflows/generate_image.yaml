@@ -29,15 +29,17 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 360
     steps:
-      # 1. 深度清理磁盘，释放最大空间
-      - name: Deep Disk Cleanup
+      - name: Get more disk space
         run: |
-          sudo rm -rf /home/runner/actions-runner/cached/_diag/* /home/runner/_diag/*
-          sudo docker system prune -a -f --volumes
-          sudo apt clean && sudo apt autoremove -y --purge
-          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/miniconda /usr/local/go /usr/share/maven
-          sudo rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* /var/log/*.log
-          sudo sync && echo 3 > /proc/sys/vm/drop_caches
+          sudo rm -rf /home/runner/actions-runner/cached/_diag/* || true
+          sudo rm -rf /home/runner/_diag/* || true
+          sudo docker system prune -a -f || true
+          sudo apt-get clean
+          sudo apt-get autoremove -y --purge
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/share/boost || true
+          sudo rm -rf /var/lib/apt/lists/* || true
+          sudo rm -rf ${{ github.workspace }}/build/* ${{ github.workspace }}/images/* || true
+          sudo rm -rf /tmp/* /var/tmp/* || true
           df -h
 
       # 2. 检出代码仓库

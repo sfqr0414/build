@@ -1,10 +1,7 @@
-# 工作流名称
 name: Generate OrangePi5-Max Gnome Image
 
-# 触发条件：仅手动触发
 on:
   workflow_dispatch:
-    # 可选：添加自定义输入参数（如需灵活调整编译参数可启用）
     inputs:
       board:
         description: '目标开发板型号'
@@ -26,83 +23,150 @@ on:
         required: true
         default: 'gnome'
         type: string
-# 作业定义
+
 jobs:
   build-and-upload-image:
-    # 运行环境：Ubuntu 24.04
     runs-on: ubuntu-24.04
-    # 设置超时时间（编译镜像耗时较长，建议设为6小时）
     timeout-minutes: 360
-
     steps:
-      - name: Get more disk space
+      # 1. 深度清理磁盘，释放最大空间
+      - name: Deep Disk Cleanup
         run: |
-          sudo rm -rf /home/runner/actions-runner/cached/_diag/* || true
-          sudo rm -rf /home/runner/_diag/* || true
-          sudo docker system prune -a -f || true
-          sudo apt-get clean
-          sudo apt-get autoremove -y --purge
-          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/share/boost || true
-          sudo rm -rf /var/lib/apt/lists/* || true
-          sudo rm -rf ${{ github.workspace }}/build/* ${{ github.workspace }}/images/* || true
-          sudo rm -rf /tmp/* /var/tmp/* || true
+          sudo rm -rf /home/runner/actions-runner/cached/_diag/* /home/runner/_diag/*
+          sudo docker system prune -a -f --volumes
+          sudo apt clean && sudo apt autoremove -y --purge
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/miniconda /usr/local/go /usr/share/maven
+          sudo rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* /var/log/*.log
+          sudo sync && echo 3 > /proc/sys/vm/drop_caches
           df -h
 
-      # 步骤1：检出代码仓库（确保compile.sh在仓库根目录）
+      # 2. 检出代码仓库
       - name: Checkout Repository
         uses: actions/checkout@v4
         with:
-          # 如需拉取子模块（如有）请启用
-          # submodules: recursive
           fetch-depth: 0
 
-      # 步骤2：安装编译依赖（根据compile.sh实际需求调整）
+      # 3. 安装编译依赖
       - name: Install Build Dependencies
         run: |
           sudo apt update -y
-          # sudo apt upgrade -y
-          # 通用编译依赖（Armbian/OrangePi镜像编译常用）
           sudo apt install -y --no-install-recommends \
-            git build-essential curl wget unzip zip \
-            qemu-user-static binfmt-support python3 python3-pip \
-            rsync bc bison flex libssl-dev parted dosfstools \
-            squashfs-tools imagemagick jq zstd
+            git build-essential curl wget unzip zip qemu-user-static binfmt-support python3 python3-pip \
+            rsync bc bison flex libssl-dev parted dosfstools squashfs-tools imagemagick jq zstd
 
-      # 步骤3：赋予compile.sh执行权限
+      # 4. 启动后台定时脚本：不修改源日志，仅操作临时副本
+      - name: Start Background Log Backup & Upload Script
+        run: |
+          # 创建日志目录
+          mkdir -p ./logs
+          # 初始化主日志（仅用于编译输出，后续不修改）
+          touch ./build-image.log
+          # 初始化时单独生成带初始磁盘信息的副本（不改动源日志）
+          INIT_TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+          INIT_COPY="./logs/image-build-log-INIT-${INIT_TIMESTAMP}.log"
+          cp ./build-image.log ${INIT_COPY}
+          echo "===== Initial Disk Status at ${INIT_TIMESTAMP} =====" >> ${INIT_COPY}
+          df -h >> ${INIT_COPY}
+          # 上传初始副本（可选，便于确认初始状态）
+          export GITHUB_TOKEN="${{ secrets.GITHUB_TOKEN }}"
+          gh artifact upload "image-log-${{ github.run_id }}-INIT-${INIT_TIMESTAMP}" \
+            --file ${INIT_COPY} \
+            --repo ${{ github.repository }} \
+            --retention-days 90
+
+          # 编写后台脚本：操作临时副本，不碰源日志
+          cat > ./log-backup-upload.sh << EOF
+          #!/bin/bash
+          export GITHUB_TOKEN="${{ secrets.GITHUB_TOKEN }}"
+          export RUN_ID="${{ github.run_id }}"
+          export REPO="${{ github.repository }}"
+
+          while true
+          do
+              # 等待48分钟（2880秒）
+              sleep 2880
+
+              # 生成时间戳
+              TIMESTAMP=\$(date +%Y%m%d-%H%M%S)
+              # 步骤1：复制源日志到临时副本（核心：不修改源文件）
+              TEMP_COPY="./logs/image-build-log-TEMP-\${TIMESTAMP}.log"
+              cp ./build-image.log \${TEMP_COPY}
+              # 步骤2：仅往临时副本追加磁盘信息
+              echo -e "\\n===== Disk Status at \${TIMESTAMP} =====" >> \${TEMP_COPY}
+              df -h >> \${TEMP_COPY}
+              # 步骤3：上传临时副本（带磁盘信息）
+              gh artifact upload "image-log-\${RUN_ID}-\${TIMESTAMP}" \
+                --file \${TEMP_COPY} \
+                --repo \${REPO} \
+                --retention-days 90
+
+              # 记录上传信息到临时副本（可选），不影响源日志
+              echo "===== Uploaded as artifact: image-log-\${RUN_ID}-\${TIMESTAMP} =====" >> \${TEMP_COPY}
+              # 删除临时副本（可选，节省空间）
+              rm -f \${TEMP_COPY}
+          done
+          EOF
+
+          chmod +x ./log-backup-upload.sh
+          ./log-backup-upload.sh &
+          echo "LOG_BACKUP_PID=$!" >> $GITHUB_ENV
+
+      # 5. 赋予编译脚本执行权限
       - name: Make compile.sh Executable
         run: chmod +x ./compile.sh
 
-      # 步骤4：执行编译脚本生成镜像
+      # 6. 执行镜像编译，日志仅写入源文件 build-image.log
       - name: Build OrangePi Image
+        id: build
         run: |
           ./compile.sh build \
             BOARD=${{ github.event.inputs.board }} \
             BRANCH=${{ github.event.inputs.kernel }} \
             BUILD_DESKTOP=yes \
             BUILD_MINIMAL=no \
-            DESKTOP_APPGROUPS_SELECTED='browsers chat desktop_tools editors email internet multimedia office programming remote_desktop' \
+            DESKTOP_APPGROUPS_SELECTED='browsers desktop_tools editors multimedia' \
             DESKTOP_ENVIRONMENT=${{ github.event.inputs.desktop_env }} \
             DESKTOP_ENVIRONMENT_CONFIG_NAME=config_base \
             KERNEL_CONFIGURE=no \
             RELEASE=${{ github.event.inputs.release }} \
             ENABLE_EXTENSIONS=override-kernel \
-            2>&1 | tee >(sed 's/\x1B\[[0-9;]*[a-zA-Z]//g' > build-image.log)
-        # 可选：输出编译日志到文件（便于调试）
-        env:
-          # 强制输出详细日志
-          VERBOSE: 1
-          USE_TMPFS: no
+            COMPRESS_OUTPUT=zstd \
+            NO_BTF=yes \
+            CLEAN_LEVEL=full \
+            2>&1 | tee -a ./build-image.log
+        continue-on-error: true
 
-      - name: Save build log (debug)
+      # 7. 终止后台脚本+生成最终带磁盘信息的副本并上传
+      - name: Stop Background Script & Upload Final Log
         if: always()
-        uses: actions/upload-artifact@v4.3.3
-        with:
-          name: image-build-log
-          path: ./build-image.log
-          if-no-files-found: warn
+        run: |
+          kill ${{ env.LOG_BACKUP_PID }} || true
 
+          # 生成最终带磁盘信息的副本，不修改源日志
+          FINAL_TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+          FINAL_COPY="./logs/image-build-log-FINAL-${FINAL_TIMESTAMP}.log"
+          cp ./build-image.log ${FINAL_COPY}
+          # 仅往最终副本追加磁盘信息
+          echo -e "\\n===== Final Disk Status at ${FINAL_TIMESTAMP} =====" >> ${FINAL_COPY}
+          df -h >> ${FINAL_COPY}
+
+          # 上传最终副本
+          export GITHUB_TOKEN="${{ secrets.GITHUB_TOKEN }}"
+          gh artifact upload "image-log-${{ github.run_id }}-FINAL-${FINAL_TIMESTAMP}" \
+            --file ${FINAL_COPY} \
+            --repo ${{ github.repository }} \
+            --retention-days 90
+
+          # 可选：上传纯净的源日志（无磁盘信息）
+          gh artifact upload "image-log-${{ github.run_id }}-PURE" \
+            --file ./build-image.log \
+            --repo ${{ github.repository }} \
+            --retention-days 90
+
+      # ========== 保留你指定的 列文件 + 上传镜像 逻辑 ==========
       # 步骤5：列出生成的镜像文件（便于确认路径，调试用）
       - name: List Generated Image Files
+        if: always()
         run: |
           echo "=== 列出output目录结构 ==="
           ls -la ./output/ || true
@@ -127,3 +191,10 @@ jobs:
           retention-days: 90
           # 启用并行上传（加快大文件上传速度）
           if-no-files-found: error  # 无文件时触发错误（避免漏传）
+
+      # 8. 最终清理磁盘空间
+      - name: Final Cleanup
+        if: always()
+        run: |
+          sudo rm -rf ./build ./output ./logs ./build-image.log
+          sudo sync && echo 3 > /proc/sys/vm/drop_caches

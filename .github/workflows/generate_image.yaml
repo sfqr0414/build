@@ -25,7 +25,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 360
     steps:
-      # 1. 轻量磁盘清理
+      # 1. 轻量磁盘清理（无冗余操作，避免阻塞）
       - name: Light Disk Cleanup
         run: |
           sudo rm -rf /home/runner/actions-runner/cached/_diag/* /home/runner/_diag/*
@@ -34,98 +34,77 @@ jobs:
           sudo rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* /var/log/*.log
           sudo sync
           df -h
-        shell: bash
+        shell shell: bash
         timeout-minutes: 2
 
-      # 2. 安装GH CLI（确保上传命令可用）
-      - name: Install GitHub CLI
-        run: |
-          # 用二进制包快速安装
-          curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
-          echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
-          sudo apt update -y >/dev/null 2>&1
-          sudo apt install gh -y >/dev/null 2>&1
-          # 验证并授权
-          gh --version && gh auth setup-git
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        shell: bash
-        timeout-minutes: 3
-
-      # 3. 检出代码
+      # 2. 检出代码（直接使用预装工具，无额外依赖）
       - name: Checkout Repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
         timeout-minutes: 1
 
-      # 4. 安装构建依赖
+      # 3. 安装构建依赖（精简包列表，避免Apt锁）
       - name: Install Build Dependencies
         run: |
-          sudo apt update -y >/dev/null 2>&1
           sudo apt install -y --no-install-recommends \
             git build-essential curl wget unzip zip qemu-user-static binfmt-support python3 python3-pip \
             rsync bc bison flex libssl-dev parted dosfstools squashfs-tools imagemagick jq zstd
         shell: bash
         timeout-minutes: 5
 
-      # 5. 初始化日志并上传首次日志
-      - name: Init Log & Upload Initial Log
+      # 4. 初始化日志 + 上传初始日志（用预装gh，显式指定GH_TOKEN）
+      - name: Init Log & Upload Initial Snapshot
         run: |
           mkdir -p ./logs
           touch ./build-image.log
           
-          # 生成初始日志（带磁盘信息）
+          # 生成带磁盘信息的初始日志
           INIT_TIMESTAMP=$(date +%Y%m%d-%H%M%S)
           INIT_LOG="./logs/image-build-log-INIT-${INIT_TIMESTAMP}.log"
           cp ./build-image.log "${INIT_LOG}"
           echo "===== Initial Disk Status at ${INIT_TIMESTAMP} =====" >> "${INIT_LOG}"
           df -h >> "${INIT_LOG}"
           
-          # 立即上传初始日志
-          gh artifact upload "image-log-${{ github.run_id }}-INIT-${INIT_TIMESTAMP}" \
-            --file "${INIT_LOG}" --repo "${{ github.repository }}" --retention-days 90
+          # 上传（加|| true避免上传失败终止步骤）
+          gh run upload "${INIT_LOG}" || true
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}  # gh工具运行的必要环境变量
         shell: bash
 
-      # 6. 启动48分钟周期：生成日志+自动上传（核心修复）
+      # 5. 启动48分钟周期：生成日志+上传（容错性增强）
       - name: Start 48min Log Backup & Upload Daemon
         run: |
           bash -c '
-          RUN_ID="${{ github.run_id }}"
-          REPO="${{ github.repository }}"
           while true
           do
-              # 等待48分钟
-              sleep 2880
-              
-              # 步骤1：生成带磁盘信息的日志
+              sleep 2880  # 48分钟周期
               TIMESTAMP=$(date +%Y%m%d-%H%M%S)
               TEMP_LOG="./logs/image-build-log-TEMP-${TIMESTAMP}.log"
+              
+              # 生成带磁盘信息的日志快照
               cp ./build-image.log "${TEMP_LOG}"
               echo -e "\n===== Disk Status at ${TIMESTAMP} =====" >> "${TEMP_LOG}"
               df -h >> "${TEMP_LOG}"
               
-              # 步骤2：立即上传该日志（无需依赖外部步骤）
-              gh artifact upload "image-log-${RUN_ID}-${TIMESTAMP}" \
-                --file "${TEMP_LOG}" --repo "${REPO}" --retention-days 90
+              # 上传（|| true确保上传失败不终止后台进程）
+              gh run upload "${TEMP_LOG}" || true
               
-              # （可选）删除已上传日志，，节省空间
+              # 清理已上传文件（可选）
               rm -f "${TEMP_LOG}"
           done
           ' &
-          echo "BACKUP_UPLOAD_PID=$!" >> "$GITHUB_ENV"
+          echo "DAEMON_PID=$!" >> "$GITHUB_ENV"
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
 
-      # 7. 赋予编译脚本执行权限
+      # 6. 赋予编译脚本执行权限
       - name: Make compile.sh Executable
         run: chmod +x ./compile.sh
         shell: bash
 
-      # 8. 执行镜像编译
+      # 7. 执行镜像编译（核心步骤，不受上传波动影响）
       - name: Build OrangePi Image
         id: build
         run: |
@@ -147,11 +126,12 @@ jobs:
         continue-on-error: true
         shell: bash
 
-      # 9. 终止后台进程 + 上传最终日志
-      - name: Stop Daemon & Upload Final Log
+      # 8. 终止后台进程 + 上传最终日志（容错性增强）
+      - name: Stop Daemon & Upload Final Logs
         if: always()
         run: |
-          [ -n "${{ env.BACKUP_UPLOAD_PID }}" ] && kill ${{ env.BACKUP_UPLOAD_PID }} 2>/dev/null || true
+          # 终止后台进程（容错处理）
+          [ -n "${{ env.DAEMON_PID }}" ] && kill ${{ env.DAEMON_PID }} 2>/dev/null || true
           
           # 生成最终日志
           FINAL_TIMESTAMP=$(date +%Y%m%d-%H%M%S)
@@ -160,16 +140,13 @@ jobs:
           echo -e "\n===== Final Disk Status at ${FINAL_TIMESTAMP} =====" >> "${FINAL_LOG}"
           df -h >> "${FINAL_LOG}"
           
-          # 上传最终日志+纯净日志
-          gh artifact upload "image-log-${{ github.run_id }}-FINAL-${FINAL_TIMESTAMP}" \
-            --file "${FINAL_LOG}" --repo "${{ github.repository }}" --retention-days 90
-          gh artifact upload "image-log-${{ github.run_id }}-PURE" \
-            --file ./build-image.log --repo "${{ github.repository }}" --retention-days 90
+          # 上传最终日志+纯净编译日志（|| true容错）
+          gh run upload "${FINAL_LOG}" ./build-image.log || true
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
 
-      # 10. 列出镜像文件
+      # 9. 列出镜像文件（调试用）
       - name: List Generated Image Files
         if: always()
         run: |
@@ -179,7 +156,7 @@ jobs:
           ls -la ./output/images/ || true
         shell: bash
 
-      # 11. 上传镜像产物
+      # 10. 上传镜像产物（用官方Action，稳定可靠）
       - name: Upload Image Artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -193,7 +170,7 @@ jobs:
           retention-days: 90
           if-no-files-found: error
 
-      # 12. 最终清理
+      # 11. 最终清理
       - name: Final Cleanup
         if: always()
         run: |

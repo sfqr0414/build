@@ -85,11 +85,20 @@ jobs:
             DESKTOP_ENVIRONMENT_CONFIG_NAME=config_base \
             KERNEL_CONFIGURE=no \
             RELEASE=${{ github.event.inputs.release }} \
-            ENABLE_EXTENSIONS=override-kernel 
+            ENABLE_EXTENSIONS=override-kernel \
+            2>&1 | tee >(sed 's/\x1B\[[0-9;]*[a-zA-Z]//g' > build-image.log)
         # 可选：输出编译日志到文件（便于调试）
         env:
           # 强制输出详细日志
           VERBOSE: 1
+
+      - name: Save build log (debug)
+        if: always()
+        uses: actions/upload-artifact@v4.3.3
+        with:
+          name: image-build-log
+          path: ./build-image.log
+          if-no-files-found: warn
 
       # 步骤5：列出生成的镜像文件（便于确认路径，调试用）
       - name: List Generated Image Files

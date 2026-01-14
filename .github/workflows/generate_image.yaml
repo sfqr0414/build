@@ -4,22 +4,18 @@ on:
   workflow_dispatch:
     inputs:
       board:
-        description: '目标开发板型号'
         required: true
         default: 'orangepi5-max'
         type: string
       kernel:
-        description: '内核版本'
         required: true
         default: 'edge'
         type: string
       release:
-        description: '发行版'
         required: true
         default: 'plucky'
         type: string
       desktop_env:
-        description: '桌面环境'
         required: true
         default: 'gnome'
         type: string
@@ -29,25 +25,25 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 360
     steps:
-      # 1. 深度清理磁盘（释放15G+空间，解决磁盘耗尽问题）
+      # 1. 深度清理磁盘
       - name: Deep Disk Cleanup
         run: |
           sudo rm -rf /home/runner/actions-runner/cached/_diag/* /home/runner/_diag/*
           sudo docker system prune -a -f --volumes
           sudo apt clean && sudo apt autoremove -y --purge
-          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/miniconda /usr/local/go /usr/share/maven /usr/local/lib/node_modules
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/miniconda /usr/local/go /usr/share/maven
           sudo rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* /var/log/*.log
           sudo sync
           df -h > ./disk-initial.log
         shell: bash
 
-      # 2. 检出代码仓库
+      # 2. 检出代码
       - name: Checkout Repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      # 3. 安装编译依赖
+      # 3. 安装依赖
       - name: Install Build Dependencies
         run: |
           sudo apt update -y
@@ -56,13 +52,12 @@ jobs:
             rsync bc bison flex libssl-dev parted dosfstools squashfs-tools imagemagick jq zstd
         shell: bash
 
-      # 4. 初始化日志目录+启动后台日志备份（无脚本文件，直接后台执行）
+      # 4. 初始化日志+后台备份（修复kill和gh命令）
       - name: Init Logs & Start Background Backup
         run: |
           mkdir -p ./logs ./logs/to-upload
           touch ./build-image.log
           
-          # 初始化带磁盘信息的日志副本
           INIT_TIMESTAMP=$(date +%Y%m%d-%H%M%S)
           INIT_COPY="./logs/image-build-log-INIT-${INIT_TIMESTAMP}.log"
           cp ./build-image.log "${INIT_COPY}"
@@ -70,7 +65,7 @@ jobs:
           cat ./disk-initial.log >> "${INIT_COPY}"
           mv "${INIT_COPY}" ./logs/to-upload/
           
-          # 后台执行备份逻辑（每48分钟，无单独脚本文件）
+          # 后台备份逻辑
           bash -c '
           while true
           do
@@ -86,12 +81,12 @@ jobs:
           echo "BACKUP_PID=$!" >> "$GITHUB_ENV"
         shell: bash
 
-      # 5. 启动后台日志上传（无脚本文件，直接后台执行）
+      # 5. 后台上传（核心修复：用gh artifact upload替代gh run upload）
       - name: Start Background Log Upload
         run: |
-          # 后台执行上传逻辑（每分钟检查，无单独脚本文件）
+          # 后台上传逻辑（修复gh命令参数）
           bash -c '
-          RUN_ID="${{ github.run_id }}"
+          REPO="${{ github.repository }}"
           while true
           do
               if [ -n "$(ls -A ./logs/to-upload/*.log 2>/dev/null)" ]; then
@@ -99,8 +94,9 @@ jobs:
                       FILE_NAME=$(basename "${LOG_FILE}")
                       TIMESTAMP=$(echo "${FILE_NAME}" | sed -n "s/.*-\([0-9]\{8\}-[0-9]\{6\}\)\.log/\1/p")
                       [ -z "${TIMESTAMP}" ] && TIMESTAMP=$(date +%Y%m%d-%H%M%S)
-                      ARTIFACT_NAME="image-log-${RUN_ID}-${TIMESTAMP}"
-                      gh run upload "${RUN_ID}" --name "${ARTIFACT_NAME}" --file "${LOG_FILE}"
+                      ARTIFACT_NAME="image-log-${{ github.run_id }}-${TIMESTAMP}"
+                      # 正确的gh artifact上传命令
+                      gh artifact upload "${ARTIFACT_NAME}" --file "${LOG_FILE}" --repo "${REPO}" --retention-days 90
                       rm -f "${LOG_FILE}"
                   done
               fi
@@ -112,12 +108,12 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
 
-      # 6. 赋予编译脚本执行权限
+      # 6. 编译脚本权限
       - name: Make compile.sh Executable
         run: chmod +x ./compile.sh
         shell: bash
 
-      # 7. 执行镜像编译（日志仅写入build-image.log）
+      # 7. 编译镜像
       - name: Build OrangePi Image
         id: build
         run: |
@@ -139,27 +135,34 @@ jobs:
         continue-on-error: true
         shell: bash
 
-      # 8. 终止后台进程+上传最终日志
+      # 8. 终止后台进程+上传最终日志（修复kill命令，增加PID判断）
       - name: Stop Background Processes & Upload Final Log
         if: always()
         run: |
-          kill ${{ env.BACKUP_PID }} ${{ env.UPLOAD_PID }} || true
+          # 修复kill：仅当PID存在时才杀死
+          [ -n "${{ env.BACKUP_PID }}" ] && kill ${{ env.BACKUP_PID }} 2>/dev/null || true
+          [ -n "${{ env.UPLOAD_PID }}" ] && kill ${{ env.UPLOAD_PID }} 2>/dev/null || true
           
-          # 生成最终带磁盘信息的日志
           FINAL_TIMESTAMP=$(date +%Y%m%d-%H%M%S)
           FINAL_COPY="./logs/image-build-log-FINAL-${FINAL_TIMESTAMP}.log"
           cp ./build-image.log "${FINAL_COPY}"
           echo -e "\n===== Final Disk Status at ${FINAL_TIMESTAMP} =====" >> "${FINAL_COPY}"
           df -h >> "${FINAL_COPY}"
           
-          # 上传最终日志和纯净源日志
-          gh run upload ${{ github.run_id }} --name "image-log-${{ github.run_id }}-FINAL-${FINAL_TIMESTAMP}" --file "${FINAL_COPY}"
-          gh run upload ${{ github.run_id }} --name "image-log-${{ github.run_id }}-PURE" --file ./build-image.log
+          # 正确上传最终日志
+          gh artifact upload "image-log-${{ github.run_id }}-FINAL-${FINAL_TIMESTAMP}" \
+            --file "${FINAL_COPY}" \
+            --repo ${{ github.repository }} \
+            --retention-days 90
+          gh artifact upload "image-log-${{ github.run_id }}-PURE" \
+            --file ./build-image.log \
+            --repo ${{ github.repository }} \
+            --retention-days 90
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
 
-      # 9. 保留原有列文件逻辑
+      # 9. 列出镜像文件
       - name: List Generated Image Files
         if: always()
         run: |
@@ -169,7 +172,7 @@ jobs:
           ls -la ./output/images/ || true
         shell: bash
 
-      # 10. 保留原有镜像上传逻辑
+      # 10. 上传镜像产物
       - name: Upload Image Artifacts
         uses: actions/upload-artifact@v4
         with:

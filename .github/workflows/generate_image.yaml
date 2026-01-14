@@ -29,7 +29,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 360
     steps:
-      # 1. 深度清理磁盘（移除权限敏感的 drop_caches 操作）
+      # 1. 深度清理磁盘（移除权限敏感操作）
       - name: Deep Disk Cleanup
         run: |
           sudo rm -rf /home/runner/actions-runner/cached/_diag/* /home/runner/_diag/*
@@ -37,8 +37,9 @@ jobs:
           sudo apt clean && sudo apt autoremove -y --purge
           sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/miniconda /usr/local/go /usr/share/maven
           sudo rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* /var/log/*.log
-          sudo sync  # 替换 drop_caches，安全释放页缓存
+          sudo sync
           df -h
+        shell: bash
 
       # 2. 检出代码仓库
       - name: Checkout Repository
@@ -53,73 +54,90 @@ jobs:
           sudo apt install -y --no-install-recommends \
             git build-essential curl wget unzip zip qemu-user-static binfmt-support python3 python3-pip \
             rsync bc bison flex libssl-dev parted dosfstools squashfs-tools imagemagick jq zstd
+        shell: bash
 
-      # 4. 启动后台脚本：仅备份日志（不使用 gh），标记待上传文件
+      # 4. 启动后台日志备份脚本（强制bash执行）
       - name: Start Background Log Backup Script
         run: |
-          # 创建日志目录和待上传标记目录
           mkdir -p ./logs ./logs/to-upload
-          # 初始化主日志（仅存编译输出）
           touch ./build-image.log
-          # 初始化带磁盘信息的副本并标记待上传
+          
+          # 初始化带磁盘信息的日志副本
           INIT_TIMESTAMP=$(date +%Y%m%d-%H%M%S)
           INIT_COPY="./logs/image-build-log-INIT-${INIT_TIMESTAMP}.log"
-          cp ./build-image.log ${INIT_COPY}
-          echo "===== Initial Disk Status at ${INIT_TIMESTAMP} =====" >> ${INIT_COPY}
-          df -h >> ${INIT_COPY}
-          mv ${INIT_COPY} ./logs/to-upload/  # 标记为待上传
-
-          # 后台脚本：每48分钟备份日志到待上传目录（无 gh 依赖）
-          cat > ./log-backup.sh << EOF
-          #!/bin/bash
-          while true
-          do
-              sleep 2880  # 48分钟
-              TIMESTAMP=\$(date +%Y%m%d-%H%M%S)
-              # 复制源日志生成临时副本
-              TEMP_COPY="./logs/image-build-log-TEMP-\${TIMESTAMP}.log"
-              cp ./build-image.log \${TEMP_COPY}
-              # 仅往副本追加磁盘信息
-              echo -e "\\n===== Disk Status at \${TIMESTAMP} =====" >> \${TEMP_COPY}
-              df -h >> \${TEMP_COPY}
-              # 移动到待上传目录，触发上传步骤
-              mv \${TEMP_COPY} ./logs/to-upload/
-          done
-          EOF
-
+          cp ./build-image.log "${INIT_COPY}"
+          echo "===== Initial Disk Status at ${INIT_TIMESTAMP} =====" >> "${INIT_COPY}"
+          df -h >> "${INIT_COPY}"
+          mv "${INIT_COPY}" ./logs/to-upload/
+          
+          # 编写后台备份脚本（兼容bash）
+          cat > ./log-backup.sh << 'EOF'
+#!/bin/bash
+while true
+do
+    sleep 2880  # 48分钟
+    TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+    TEMP_COPY="./logs/image-build-log-TEMP-${TIMESTAMP}.log"
+    
+    # 复制源日志生成副本，追加磁盘信息
+    cp ./build-image.log "${TEMP_COPY}"
+    echo -e "\n===== Disk Status at ${TIMESTAMP} =====" >> "${TEMP_COPY}"
+    df -h >> "${TEMP_COPY}"
+    
+    # 移动到待上传目录
+    mv "${TEMP_COPY}" ./logs/to-upload/
+done
+EOF
+          
           chmod +x ./log-backup.sh
           ./log-backup.sh &
-          echo "LOG_BACKUP_PID=$!" >> $GITHUB_ENV
+          echo "LOG_BACKUP_PID=$!" >> "$GITHUB_ENV"
+        shell: bash
 
-      # 5. 并行上传待上传日志（关键：独立步骤循环检查，不阻塞编译）
+      # 5. 启动并行日志上传脚本（关键修复：强制bash+稳定提取时间戳）
       - name: Continuous Upload Pending Logs
         run: |
-          while true
-          do
-              # 检查待上传目录是否有文件
-              if [ -n "$(ls -A ./logs/to-upload/ 2>/dev/null)" ]; then
-                  for LOG_FILE in ./logs/to-upload/*.log; do
-                      # 提取时间戳用于 artifact 命名
-                      TIMESTAMP=\$(echo \${LOG_FILE} | grep -oE '[0-9]{8}-[0-9]{6}')
-                      ARTIFACT_NAME="image-log-${{ github.run_id }}-\${TIMESTAMP}"
-                      # 使用官方 action 上传，无权限问题
-                      echo "Uploading log artifact: \${ARTIFACT_NAME}"
-                      gh run upload ${{ github.run_id }} --name "\${ARTIFACT_NAME}" --file "\${LOG_FILE}"
-                      # 上传后删除，避免重复上传
-                      rm -f \${LOG_FILE}
-                  done
-              fi
-              sleep 60  # 每分钟检查一次
-          done &
-          echo "UPLOADER_PID=$!" >> $GITHUB_ENV
+          cat > ./log-uploader.sh << 'EOF'
+#!/bin/bash
+RUN_ID="${{ github.run_id }}"
+while true
+do
+    # 检查待上传目录是否有文件
+    if [ -n "$(ls -A ./logs/to-upload/*.log 2>/dev/null)" ]; then
+        for LOG_FILE in ./logs/to-upload/*.log; do
+            # 用basename提取时间戳（替代grep，避免正则语法问题）
+            FILE_NAME=$(basename "${LOG_FILE}")
+            TIMESTAMP=$(echo "${FILE_NAME}" | sed -n 's/.*-\([0-9]\{8\}-[0-9]\{6\}\)\.log/\1/p')
+            if [ -z "${TIMESTAMP}" ]; then
+                TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+            fi
+            ARTIFACT_NAME="image-log-${RUN_ID}-${TIMESTAMP}"
+            
+            # 上传日志
+            echo "Uploading log artifact: ${ARTIFACT_NAME}"
+            gh run upload "${RUN_ID}" --name "${ARTIFACT_NAME}" --file "${LOG_FILE}"
+            
+            # 删除已上传文件
+            rm -f "${LOG_FILE}"
+        done
+    fi
+    sleep 60  # 每分钟检查一次
+done
+EOF
+          
+          chmod +x ./log-uploader.sh
+          ./log-uploader.sh &
+          echo "UPLOADER_PID=$!" >> "$GITHUB_ENV"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash  # 强制使用bash执行，解决语法错误
 
       # 6. 赋予编译脚本执行权限
       - name: Make compile.sh Executable
         run: chmod +x ./compile.sh
+        shell: bash
 
-      # 7. 执行镜像编译，日志仅写入源文件
+      # 7. 执行镜像编译
       - name: Build OrangePi Image
         id: build
         run: |
@@ -139,27 +157,28 @@ jobs:
             CLEAN_LEVEL=full \
             2>&1 | tee -a ./build-image.log
         continue-on-error: true
+        shell: bash
 
-      # 8. 终止后台脚本+生成最终日志并上传
+      # 8. 终止后台脚本+上传最终日志
       - name: Stop Background Scripts & Upload Final Log
         if: always()
         run: |
-          # 终止后台备份和上传脚本
           kill ${{ env.LOG_BACKUP_PID }} ${{ env.UPLOADER_PID }} || true
-          # 生成最终带磁盘信息的副本
+          
           FINAL_TIMESTAMP=$(date +%Y%m%d-%H%M%S)
           FINAL_COPY="./logs/image-build-log-FINAL-${FINAL_TIMESTAMP}.log"
-          cp ./build-image.log ${FINAL_COPY}
-          echo -e "\\n===== Final Disk Status at ${FINAL_TIMESTAMP} =====" >> ${FINAL_COPY}
-          df -h >> ${FINAL_COPY}
-          # 上传最终日志
-          gh run upload ${{ github.run_id }} --name "image-log-${{ github.run_id }}-FINAL-${FINAL_TIMESTAMP}" --file ${FINAL_COPY}
-          # 上传纯净源日志
+          cp ./build-image.log "${FINAL_COPY}"
+          echo -e "\n===== Final Disk Status at ${FINAL_TIMESTAMP} =====" >> "${FINAL_COPY}"
+          df -h >> "${FINAL_COPY}"
+          
+          # 上传最终日志和纯净源日志
+          gh run upload ${{ github.run_id }} --name "image-log-${{ github.run_id }}-FINAL-${FINAL_TIMESTAMP}" --file "${FINAL_COPY}"
           gh run upload ${{ github.run_id }} --name "image-log-${{ github.run_id }}-PURE" --file ./build-image.log
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
 
-      # 9. 保留原有的列文件逻辑
+      # 9. 保留原有列文件逻辑
       - name: List Generated Image Files
         if: always()
         run: |
@@ -167,8 +186,9 @@ jobs:
           ls -la ./output/ || true
           echo "=== 列出images目录文件 ==="
           ls -la ./output/images/ || true
+        shell: bash
 
-      # 10. 保留原有的镜像上传逻辑
+      # 10. 保留原有镜像上传逻辑
       - name: Upload Image Artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -188,3 +208,4 @@ jobs:
         run: |
           sudo rm -rf ./build ./output ./logs ./build-image.log
           sudo sync
+        shell: bash

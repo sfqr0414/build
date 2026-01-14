@@ -25,49 +25,26 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 360
     steps:
-      # 1. 深度清理磁盘（简化操作，减少耗时）
-      - name: Deep Disk Cleanup
+      # 1. 简化磁盘清理（移除apt autoremove的冗余警告）
+      - name: Light Disk Cleanup
         run: |
           sudo rm -rf /home/runner/actions-runner/cached/_diag/* /home/runner/_diag/*
           sudo docker system prune -a -f --volumes >/dev/null 2>&1
-          sudo apt clean && sudo apt autoremove -y --purge >/dev/null 2>&1
           sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/miniconda /usr/local/go /usr/share/maven
           sudo rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* /var/log/*.log
           sudo sync
           df -h
         shell: bash
-        timeout-minutes: 2  # 设置超时，避免卡壳
+        timeout-minutes: 2
 
-      # 2. 优化GH CLI安装：用二进制包直接安装，跳过APT源（解决网络超时）
-      - name: Install GitHub CLI (Binary Package)
-        run: |
-          echo "当前GH版本：$(gh --version 2>/dev/null || echo '未安装')"
-          # 下载最新GH二进制包（比APT源更快）
-          GH_VERSION=$(curl -s https://api.github.com/repos/cli/cli/releases/latest | jq -r '.tag_name' | sed 's/v//')
-          GH_ARCH=$(dpkg --print-architecture)
-          GH_TAR="gh_${GH_VERSION}_linux_${GH_ARCH}.tar.gz"
-          curl -fsSL "https://github.com/cli/cli/releases/download/v${GH_VERSION}/${GH_TAR}" -o /tmp/gh.tar.gz
-          # 解压并安装
-          sudo tar -xzf /tmp/gh.tar.gz -C /tmp
-          sudo cp /tmp/gh_${GH_VERSION}_linux_${GH_ARCH}/bin/gh /usr/local/bin/
-          # 验证安装
-          gh --version && echo "✅ GH CLI安装成功"
-          # 预认证（避免后续上传权限问题）
-          gh auth setup-git --hostname github.com
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        shell: bash
-        timeout-minutes: 3  # 缩短超时，二进制包下载更快
-        continue-on-error: true  # 即使安装失败，继续执行（降级为API上传）
-
-      # 3. 检出代码
+      # 2. 检出代码（优先执行，避免依赖阻塞）
       - name: Checkout Repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
         timeout-minutes: 1
 
-      # 4. 安装依赖（精简包列表，减少耗时）
+      # 3. 安装构建依赖（提前安装jq，避免后续解析失败）
       - name: Install Build Dependencies
         run: |
           sudo apt update -y >/dev/null 2>&1
@@ -77,67 +54,66 @@ jobs:
         shell: bash
         timeout-minutes: 5
 
-      # 5. 初始化日志 + 48分钟周期备份上传（兼容GH CLI/API双模式）
-      - name: Init Logs & Start 48min Backup-Upload Daemon
+      # 4. 初始化日志目录
+      - name: Init Log Directory
         run: |
-          mkdir -p ./logs
+          mkdir -p ./logs ./logs/backup ./logs/uploaded
           touch ./build-image.log
-          
-          # 初始化日志并上传（兼容GH CLI/API）
+          # 初始化带磁盘信息的日志
           INIT_TIMESTAMP=$(date +%Y%m%d-%H%M%S)
-          INIT_COPY="./logs/image-build-log-INIT-${INIT_TIMESTAMP}.log"
-          cp ./build-image.log "${INIT_COPY}"
-          echo "===== Initial Disk Status at ${INIT_TIMESTAMP} =====" >> "${INIT_COPY}"
-          df -h >> "${INIT_COPY}"
-          
-          # 上传逻辑：优先用GH CLI，失败则用API
-          if gh artifact --help >/dev/null 2>&1; then
-              gh artifact upload "image-log-${{ github.run_id }}-INIT-${INIT_TIMESTAMP}" \
-                --file "${INIT_COPY}" --repo "${{ github.repository }}" --retention-days 90
-          else
-              # API上传备用方案
-              UPLOAD_URL=$(gh api --method POST "/repos/${{ github.repository_owner }}/${{ github.event.repository.name }}/actions/runs/${{ github.run_id }}/artifacts" \
-                -f name="image-log-${{ github.run_id }}-INIT-${INIT_TIMESTAMP}" -f artifact_type=file -f expires_in=90 | jq -r '.upload_url')
-              curl -X PUT "${UPLOAD_URL}" -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" -H "Content-Type: application/octet-stream" --data-binary "@${INIT_COPY}" >/dev/null 2>&1
-          fi
-          
-          # 后台48分钟周期任务（双模式上传）
+          INIT_LOG="./logs/backup/image-build-log-INIT-${INIT_TIMESTAMP}.log"
+          cp ./build-image.log "${INIT_LOG}"
+          echo "===== Initial Disk Status at ${INIT_TIMESTAMP} =====" >> "${INIT_LOG}"
+          df -h >> "${INIT_LOG}"
+          # 标记为待上传
+          mv "${INIT_LOG}" ./logs/
+        shell: bash
+
+      # 5. 启动48分钟周期的日志备份（仅备份，不上传）
+      - name: Start 48min Log Backup Daemon
+        run: |
           bash -c '
-          REPO="${{ github.repository }}"
-          RUN_ID="${{ github.run_id }}"
-          OWNER="${{ github.repository_owner }}"
-          REPO_NAME="${{ github.event.repository.name }}"
           while true
           do
               sleep 2880
               TIMESTAMP=$(date +%Y%m%d-%H%M%S)
-              TEMP_COPY="./logs/image-build-log-TEMP-${TIMESTAMP}.log"
-              cp ./build-image.log "${TEMP_COPY}"
-              echo -e "\n===== Disk Status at ${TIMESTAMP} =====" >> "${TEMP_COPY}"
-              df -h >> "${TEMP_COPY}"
-              
-              # 双模式上传
-              if gh artifact --help >/dev/null 2>&1; then
-                  gh artifact upload "image-log-${RUN_ID}-${TIMESTAMP}" --file "${TEMP_COPY}" --repo "${REPO}" --retention-days 90
-              else
-                  UPLOAD_URL=$(gh api --method POST "/repos/${OWNER}/${REPO_NAME}/actions/runs/${RUN_ID}/artifacts" \
-                    -f name="image-log-${RUN_ID}-${TIMESTAMP}" -f artifact_type=file -f expires_in=90 | jq -r '.upload_url')
-                  curl -X PUT "${UPLOAD_URL}" -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" -H "Content-Type: application/octet-stream" --data-binary "@${TEMP_COPY}" >/dev/null 2>&1
-              fi
-              rm -f "${TEMP_COPY}"
+              BACKUP_LOG="./logs/backup/image-build-log-TEMP-${TIMESTAMP}.log"
+              cp ./build-image.log "${BACKUP_LOG}"
+              echo -e "\n===== Disk Status at ${TIMESTAMP} =====" >> "${BACKUP_LOG}"
+              df -h >> "${BACKUP_LOG}"
+              mv "${BACKUP_LOG}" ./logs/
           done
           ' &
-          echo "BACKUP_UPLOAD_PID=$!" >> "$GITHUB_ENV"
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          echo "BACKUP_PID=$!" >> "$GITHUB_ENV"
         shell: bash
 
-      # 6. 编译脚本权限
+      # 6. 定时上传日志（使用官方action，每5分钟上传一次，避开gh命令）
+      - name: Periodic Log Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: image-log-backup-${{ github.run_id }}
+          path: ./logs/*.log
+          retention-days: 90
+        continue-on-error: true
+        # 每5分钟执行一次（利用GitHub Actions的cron模拟，实际通过循环触发）
+        run: |
+          while true
+          do
+              if [ -n "$(ls -A ./logs/*.log 2>/dev/null)" ]; then
+                  # 移动已上传日志到uploaded目录
+                  mv ./logs/*.log ./logs/uploaded/
+              fi
+              sleep 300
+          done &
+          echo "UPLOADER_PID=$!" >> "$GITHUB_ENV"
+        shell: bash
+
+      # 7. 赋予编译脚本执行权限
       - name: Make compile.sh Executable
         run: chmod +x ./compile.sh
         shell: bash
 
-      # 7. 编译镜像
+      # 8. 执行镜像编译
       - name: Build OrangePi Image
         id: build
         run: |
@@ -159,33 +135,36 @@ jobs:
         continue-on-error: true
         shell: bash
 
-      # 8. 终止后台进程 + 上传最终日志
+      # 9. 终止后台进程 + 上传最终日志
       - name: Stop Daemon & Upload Final Log
         if: always()
         run: |
-          [ -n "${{ env.BACKUP_UPLOAD_PID }}" ] && kill ${{ env.BACKUP_UPLOAD_PID }} 2>/dev/null || true
+          [ -n "${{ env.BACKUP_PID }}" ] && kill ${{ env.BACKUP_PID }} 2>/dev/null || true
+          [ -n "${{ env.UPLOADER_PID }}" ] && kill ${{ env.UPLOADER_PID }} 2>/dev/null || true
           
+          # 生成最终日志
           FINAL_TIMESTAMP=$(date +%Y%m%d-%H%M%S)
-          FINAL_COPY="./logs/image-build-log-FINAL-${FINAL_TIMESTAMP}.log"
-          cp ./build-image.log "${FINAL_COPY}"
-          echo -e "\n===== Final Disk Status at ${FINAL_TIMESTAMP} =====" >> "${FINAL_COPY}"
-          df -h >> "${FINAL_COPY}"
+          FINAL_LOG="./logs/image-build-log-FINAL-${FINAL_TIMESTAMP}.log"
+          cp ./build-image.log "${FINAL_LOG}"
+          echo -e "\n===== Final Disk Status at ${FINAL_TIMESTAMP} =====" >> "${FINAL_LOG}"
+          df -h >> "${FINAL_LOG}"
           
-          # 双模式上传最终日志
-          if gh artifact --help >/dev/null 2>&1; then
-              gh artifact upload "image-log-${{ github.run_id }}-FINAL-${FINAL_TIMESTAMP}" --file "${FINAL_COPY}" --repo "${{ github.repository }}" --retention-days 90
-              gh artifact upload "image-log-${{ github.run_id }}-PURE" --file ./build-image.log --repo "${{ github.repository }}" --retention-days 90
-          else
-              # API上传纯净日志
-              PURE_UPLOAD_URL=$(gh api --method POST "/repos/${{ github.repository_owner }}/${{ github.event.repository.name }}/actions/runs/${{ github.run_id }}/artifacts" \
-                -f name="image-log-${{ github.run_id }}-PURE" -f artifact_type=file -f expires_in=90 | jq -r '.upload_url')
-              curl -X PUT "${PURE_UPLOAD_URL}" -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" -H "Content-Type: application/octet-stream" --data-binary "@./build-image.log" >/dev/null 2>&1
-          fi
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # 上传最终日志（官方action）
+          cp ./build-image.log ./logs/image-build-log-PURE.log
         shell: bash
 
-      # 9. 列出镜像文件
+      # 10. 统一上传所有日志（官方action，最稳定）
+      - name: Upload All Logs
+        uses: actions/upload-artifact@v4
+        with:
+          name: image-log-all-${{ github.run_id }}
+          path: |
+            ./logs/*.log
+            ./logs/backup/*.log
+            ./logs/uploaded/*.log
+          retention-days: 90
+
+      # 11. 列出镜像文件
       - name: List Generated Image Files
         if: always()
         run: |
@@ -195,7 +174,7 @@ jobs:
           ls -la ./output/images/ || true
         shell: bash
 
-      # 10. 上传镜像产物
+      # 12. 上传镜像产物
       - name: Upload Image Artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -209,7 +188,7 @@ jobs:
           retention-days: 90
           if-no-files-found: error
 
-      # 11. 最终清理
+      # 13. 最终清理
       - name: Final Cleanup
         if: always()
         run: |

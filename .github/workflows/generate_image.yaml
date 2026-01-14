@@ -91,6 +91,7 @@ jobs:
         env:
           # 强制输出详细日志
           VERBOSE: 1
+          USE_TMPFS: no
 
       - name: Save build log (debug)
         if: always()

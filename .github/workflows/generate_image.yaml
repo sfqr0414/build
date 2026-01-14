@@ -25,7 +25,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 360
     steps:
-      # 1. 深度清理磁盘
+      # 1. 深度清理磁盘（移除disk-initial.log生成，避免文件缺失）
       - name: Deep Disk Cleanup
         run: |
           sudo rm -rf /home/runner/actions-runner/cached/_diag/* /home/runner/_diag/*
@@ -34,7 +34,7 @@ jobs:
           sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/miniconda /usr/local/go /usr/share/maven
           sudo rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* /var/log/*.log
           sudo sync
-          df -h > ./disk-initial.log
+          df -h  # 直接输出，不再写入文件
         shell: bash
 
       # 2. 检出代码
@@ -52,7 +52,7 @@ jobs:
             rsync bc bison flex libssl-dev parted dosfstools squashfs-tools imagemagick jq zstd
         shell: bash
 
-      # 4. 初始化日志+后台备份（修复kill和gh命令）
+      # 4. 初始化日志+后台备份（修复：直接执行df -h，不依赖外部文件）
       - name: Init Logs & Start Background Backup
         run: |
           mkdir -p ./logs ./logs/to-upload
@@ -62,7 +62,7 @@ jobs:
           INIT_COPY="./logs/image-build-log-INIT-${INIT_TIMESTAMP}.log"
           cp ./build-image.log "${INIT_COPY}"
           echo "===== Initial Disk Status at ${INIT_TIMESTAMP} =====" >> "${INIT_COPY}"
-          cat ./disk-initial.log >> "${INIT_COPY}"
+          df -h >> "${INIT_COPY}"  # 直接执行df -h，追加到日志，无需读取文件
           mv "${INIT_COPY}" ./logs/to-upload/
           
           # 后台备份逻辑
@@ -81,10 +81,10 @@ jobs:
           echo "BACKUP_PID=$!" >> "$GITHUB_ENV"
         shell: bash
 
-      # 5. 后台上传（核心修复：用gh artifact upload替代gh run upload）
+      # 5. 后台上传（使用正确的gh artifact upload命令）
       - name: Start Background Log Upload
         run: |
-          # 后台上传逻辑（修复gh命令参数）
+          # 后台上传逻辑
           bash -c '
           REPO="${{ github.repository }}"
           while true
@@ -139,7 +139,7 @@ jobs:
       - name: Stop Background Processes & Upload Final Log
         if: always()
         run: |
-          # 修复kill：仅当PID存在时才杀死
+          # 仅当PID存在时执行杀死操作
           [ -n "${{ env.BACKUP_PID }}" ] && kill ${{ env.BACKUP_PID }} 2>/dev/null || true
           [ -n "${{ env.UPLOAD_PID }}" ] && kill ${{ env.UPLOAD_PID }} 2>/dev/null || true
           
@@ -149,7 +149,7 @@ jobs:
           echo -e "\n===== Final Disk Status at ${FINAL_TIMESTAMP} =====" >> "${FINAL_COPY}"
           df -h >> "${FINAL_COPY}"
           
-          # 正确上传最终日志
+          # 上传最终日志
           gh artifact upload "image-log-${{ github.run_id }}-FINAL-${FINAL_TIMESTAMP}" \
             --file "${FINAL_COPY}" \
             --repo ${{ github.repository }} \
@@ -190,6 +190,6 @@ jobs:
       - name: Final Cleanup
         if: always()
         run: |
-          sudo rm -rf ./build ./output ./logs ./build-image.log ./disk-initial.log
+          sudo rm -rf ./build ./output ./logs ./build-image.log
           sudo sync
         shell: bash

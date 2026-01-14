@@ -62,7 +62,6 @@ jobs:
           mkdir -p ./logs ./logs/to-upload
           touch ./build-image.log
           
-          # 初始化带磁盘信息的日志副本
           INIT_TIMESTAMP=$(date +%Y%m%d-%H%M%S)
           INIT_COPY="./logs/image-build-log-INIT-${INIT_TIMESTAMP}.log"
           cp ./build-image.log "${INIT_COPY}"
@@ -70,63 +69,50 @@ jobs:
           df -h >> "${INIT_COPY}"
           mv "${INIT_COPY}" ./logs/to-upload/
           
-          # 编写后台备份脚本（无单引号EOF，允许变量展开）
+          # 关键：EOF 必须顶格，脚本内缩进不影响 YAML
           cat > ./log-backup.sh << EOF
 #!/bin/bash
 while true
 do
-    sleep 2880  # 48分钟
+    sleep 2880
     TIMESTAMP=\$(date +%Y%m%d-%H%M%S)
     TEMP_COPY="./logs/image-build-log-TEMP-\${TIMESTAMP}.log"
-    
-    # 复制源日志生成副本，追加磁盘信息
     cp ./build-image.log "\${TEMP_COPY}"
     echo -e "\\n===== Disk Status at \${TIMESTAMP} =====" >> "\${TEMP_COPY}"
     df -h >> "\${TEMP_COPY}"
-    
-    # 移动到待上传目录
     mv "\${TEMP_COPY}" ./logs/to-upload/
 done
 EOF
-          
           chmod +x ./log-backup.sh
           ./log-backup.sh &
           echo "LOG_BACKUP_PID=$!" >> "$GITHUB_ENV"
         shell: bash
 
-      # 5. 启动并行日志上传脚本（修复第76行附近语法错误核心区）
+      # 5. 启动并行日志上传脚本（修复第76行附近缩进核心区）
       - name: Continuous Upload Pending Logs
         run: |
-          # 编写上传脚本（缩进统一为2空格，变量正确转义）
+          # 核心修复：EOF 顶格！！！这是之前语法错误的根源
           cat > ./log-uploader.sh << EOF
 #!/bin/bash
 RUN_ID="${{ github.run_id }}"
 while true
 do
-    # 检查待上传目录是否有日志文件
     if [ -n "\$(ls -A ./logs/to-upload/*.log 2>/dev/null)" ]; then
         for LOG_FILE in ./logs/to-upload/*.log; do
-            # 提取文件名中的时间戳
             FILE_NAME=\$(basename "\${LOG_FILE}")
             TIMESTAMP=\$(echo "\${FILE_NAME}" | sed -n 's/.*-\\([0-9]\\{8\\}-[0-9]\\{6\\}\\)\\.log/\\1/p')
-            # 时间戳为空时用当前时间兜底
             if [ -z "\${TIMESTAMP}" ]; then
                 TIMESTAMP=\$(date +%Y%m%d-%H%M%S)
             fi
             ARTIFACT_NAME="image-log-\${RUN_ID}-\${TIMESTAMP}"
-            
-            # 上传日志
             echo "Uploading log artifact: \${ARTIFACT_NAME}"
             gh run upload "\${RUN_ID}" --name "\${ARTIFACT_NAME}" --file "\${LOG_FILE}"
-            
-            # 删除已上传文件
             rm -f "\${LOG_FILE}"
         done
     fi
-    sleep 60  # 每分钟检查一次
+    sleep 60
 done
 EOF
-          
           chmod +x ./log-uploader.sh
           ./log-uploader.sh &
           echo "UPLOADER_PID=$!" >> "$GITHUB_ENV"
@@ -173,7 +159,6 @@ EOF
           echo -e "\\n===== Final Disk Status at ${FINAL_TIMESTAMP} =====" >> "${FINAL_COPY}"
           df -h >> "${FINAL_COPY}"
           
-          # 上传最终日志和纯净源日志
           gh run upload ${{ github.run_id }} --name "image-log-${{ github.run_id }}-FINAL-${FINAL_TIMESTAMP}" --file "${FINAL_COPY}"
           gh run upload ${{ github.run_id }} --name "image-log-${{ github.run_id }}-PURE" --file ./build-image.log
         env:

@@ -25,7 +25,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 360
     steps:
-      # 1. 深度清理磁盘（移除disk-initial.log生成，避免文件缺失）
+      # 1. 深度清理磁盘
       - name: Deep Disk Cleanup
         run: |
           sudo rm -rf /home/runner/actions-runner/cached/_diag/* /home/runner/_diag/*
@@ -34,16 +34,30 @@ jobs:
           sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/miniconda /usr/local/go /usr/share/maven
           sudo rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* /var/log/*.log
           sudo sync
-          df -h  # 直接输出，不再写入文件
+          df -h
         shell: bash
 
-      # 2. 检出代码
+      # 2. 升级gh CLI到最新版（确保artifact命令可用）
+      - name: Upgrade GitHub CLI to Latest Version
+        run: |
+          echo "当前gh版本：$(gh --version || echo '未安装')"
+          type -p curl >/dev/null || (sudo apt update && sudo apt install curl -y)
+          curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg \
+            && sudo chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg \
+            && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
+          sudo apt update -y
+          sudo apt install gh -y
+          echo "升级后gh版本：$(gh --version)"
+          gh artifact --help >/dev/null 2>&1 && echo "✅ artifact命令可用" || { echo "❌ artifact命令仍不可用"; exit 1; }
+        shell: bash
+
+      # 3. 检出代码
       - name: Checkout Repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      # 3. 安装依赖
+      # 4. 安装依赖
       - name: Install Build Dependencies
         run: |
           sudo apt update -y
@@ -52,58 +66,51 @@ jobs:
             rsync bc bison flex libssl-dev parted dosfstools squashfs-tools imagemagick jq zstd
         shell: bash
 
-      # 4. 初始化日志+后台备份（修复：直接执行df -h，不依赖外部文件）
-      - name: Init Logs & Start Background Backup
+      # 5. 初始化日志 + 启动【48分钟周期】备份+上传一体化后台进程
+      - name: Init Logs & Start 48min Backup-Upload Daemon
         run: |
-          mkdir -p ./logs ./logs/to-upload
+          mkdir -p ./logs
           touch ./build-image.log
           
+          # 初始化并上传首次日志（带初始磁盘信息）
           INIT_TIMESTAMP=$(date +%Y%m%d-%H%M%S)
           INIT_COPY="./logs/image-build-log-INIT-${INIT_TIMESTAMP}.log"
           cp ./build-image.log "${INIT_COPY}"
           echo "===== Initial Disk Status at ${INIT_TIMESTAMP} =====" >> "${INIT_COPY}"
-          df -h >> "${INIT_COPY}"  # 直接执行df -h，追加到日志，无需读取文件
-          mv "${INIT_COPY}" ./logs/to-upload/
+          df -h >> "${INIT_COPY}"
+          # 上传初始化日志
+          gh artifact upload "image-log-${{ github.run_id }}-INIT-${INIT_TIMESTAMP}" \
+            --file "${INIT_COPY}" \
+            --repo "${{ github.repository }}" \
+            --retention-days 90
           
-          # 后台备份逻辑
+          # 启动后台进程：每48分钟（2880秒）执行一次 备份+上传
           bash -c '
+          REPO="${{ github.repository }}"
+          RUN_ID="${{ github.run_id }}"
           while true
           do
+              # 等待48分钟
               sleep 2880
+              
+              # 步骤1：生成带磁盘信息的日志副本
               TIMESTAMP=$(date +%Y%m%d-%H%M%S)
               TEMP_COPY="./logs/image-build-log-TEMP-${TIMESTAMP}.log"
               cp ./build-image.log "${TEMP_COPY}"
               echo -e "\n===== Disk Status at ${TIMESTAMP} =====" >> "${TEMP_COPY}"
               df -h >> "${TEMP_COPY}"
-              mv "${TEMP_COPY}" ./logs/to-upload/
+              
+              # 步骤2：立即上传该副本（无需目录中转）
+              gh artifact upload "image-log-${RUN_ID}-${TIMESTAMP}" \
+                --file "${TEMP_COPY}" \
+                --repo "${REPO}" \
+                --retention-days 90
+              
+              # 可选：删除已上传的副本，节省磁盘空间
+              rm -f "${TEMP_COPY}"
           done
           ' &
-          echo "BACKUP_PID=$!" >> "$GITHUB_ENV"
-        shell: bash
-
-      # 5. 后台上传（使用正确的gh artifact upload命令）
-      - name: Start Background Log Upload
-        run: |
-          # 后台上传逻辑
-          bash -c '
-          REPO="${{ github.repository }}"
-          while true
-          do
-              if [ -n "$(ls -A ./logs/to-upload/*.log 2>/dev/null)" ]; then
-                  for LOG_FILE in ./logs/to-upload/*.log; do
-                      FILE_NAME=$(basename "${LOG_FILE}")
-                      TIMESTAMP=$(echo "${FILE_NAME}" | sed -n "s/.*-\([0-9]\{8\}-[0-9]\{6\}\)\.log/\1/p")
-                      [ -z "${TIMESTAMP}" ] && TIMESTAMP=$(date +%Y%m%d-%H%M%S)
-                      ARTIFACT_NAME="image-log-${{ github.run_id }}-${TIMESTAMP}"
-                      # 正确的gh artifact上传命令
-                      gh artifact upload "${ARTIFACT_NAME}" --file "${LOG_FILE}" --repo "${REPO}" --retention-days 90
-                      rm -f "${LOG_FILE}"
-                  done
-              fi
-              sleep 60
-          done
-          ' &
-          echo "UPLOAD_PID=$!" >> "$GITHUB_ENV"
+          echo "BACKUP_UPLOAD_PID=$!" >> "$GITHUB_ENV"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
@@ -113,7 +120,7 @@ jobs:
         run: chmod +x ./compile.sh
         shell: bash
 
-      # 7. 编译镜像
+      # 7. 执行镜像编译
       - name: Build OrangePi Image
         id: build
         run: |
@@ -135,34 +142,34 @@ jobs:
         continue-on-error: true
         shell: bash
 
-      # 8. 终止后台进程+上传最终日志（修复kill命令，增加PID判断）
-      - name: Stop Background Processes & Upload Final Log
+      # 8. 终止后台进程 + 上传最终日志
+      - name: Stop Daemon & Upload Final Log
         if: always()
         run: |
-          # 仅当PID存在时执行杀死操作
-          [ -n "${{ env.BACKUP_PID }}" ] && kill ${{ env.BACKUP_PID }} 2>/dev/null || true
-          [ -n "${{ env.UPLOAD_PID }}" ] && kill ${{ env.UPLOAD_PID }} 2>/dev/null || true
+          # 终止48分钟周期的后台进程
+          [ -n "${{ env.BACKUP_UPLOAD_PID }}" ] && kill ${{ env.BACKUP_UPLOAD_PID }} 2>/dev/null || true
           
+          # 生成并上传最终日志（带结束时磁盘信息）
           FINAL_TIMESTAMP=$(date +%Y%m%d-%H%M%S)
           FINAL_COPY="./logs/image-build-log-FINAL-${FINAL_TIMESTAMP}.log"
           cp ./build-image.log "${FINAL_COPY}"
           echo -e "\n===== Final Disk Status at ${FINAL_TIMESTAMP} =====" >> "${FINAL_COPY}"
           df -h >> "${FINAL_COPY}"
           
-          # 上传最终日志
           gh artifact upload "image-log-${{ github.run_id }}-FINAL-${FINAL_TIMESTAMP}" \
             --file "${FINAL_COPY}" \
-            --repo ${{ github.repository }} \
+            --repo "${{ github.repository }}" \
             --retention-days 90
+          # 上传纯净编译日志（无磁盘信息）
           gh artifact upload "image-log-${{ github.run_id }}-PURE" \
             --file ./build-image.log \
-            --repo ${{ github.repository }} \
+            --repo "${{ github.repository }}" \
             --retention-days 90
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
 
-      # 9. 列出镜像文件
+      # 9. 保留原有：列出镜像文件
       - name: List Generated Image Files
         if: always()
         run: |
@@ -172,7 +179,7 @@ jobs:
           ls -la ./output/images/ || true
         shell: bash
 
-      # 10. 上传镜像产物
+      # 10. 保留原有：上传镜像产物
       - name: Upload Image Artifacts
         uses: actions/upload-artifact@v4
         with:

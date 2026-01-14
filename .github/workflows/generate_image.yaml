@@ -25,7 +25,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 360
     steps:
-      # 1. 简化磁盘清理（移除apt autoremove的冗余警告）
+      # 1. 轻量磁盘清理
       - name: Light Disk Cleanup
         run: |
           sudo rm -rf /home/runner/actions-runner/cached/_diag/* /home/runner/_diag/*
@@ -37,14 +37,14 @@ jobs:
         shell: bash
         timeout-minutes: 2
 
-      # 2. 检出代码（优先执行，避免依赖阻塞）
+      # 2. 检出代码
       - name: Checkout Repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
         timeout-minutes: 1
 
-      # 3. 安装构建依赖（提前安装jq，避免后续解析失败）
+      # 3. 安装构建依赖
       - name: Install Build Dependencies
         run: |
           sudo apt update -y >/dev/null 2>&1
@@ -65,11 +65,10 @@ jobs:
           cp ./build-image.log "${INIT_LOG}"
           echo "===== Initial Disk Status at ${INIT_TIMESTAMP} =====" >> "${INIT_LOG}"
           df -h >> "${INIT_LOG}"
-          # 标记为待上传
           mv "${INIT_LOG}" ./logs/
         shell: bash
 
-      # 5. 启动48分钟周期的日志备份（仅备份，不上传）
+      # 5. 启动48分钟周期日志备份（纯run步骤，无uses）
       - name: Start 48min Log Backup Daemon
         run: |
           bash -c '
@@ -87,33 +86,38 @@ jobs:
           echo "BACKUP_PID=$!" >> "$GITHUB_ENV"
         shell: bash
 
-      # 6. 定时上传日志（使用官方action，每5分钟上传一次，避开gh命令）
-      - name: Periodic Log Upload
-        uses: actions/upload-artifact@v4
-        with:
-          name: image-log-backup-${{ github.run_id }}
-          path: ./logs/*.log
-          retention-days: 90
-        continue-on-error: true
-        # 每5分钟执行一次（利用GitHub Actions的cron模拟，实际通过循环触发）
+      # 6. 启动定时上传守护进程（纯run步骤，负责标记待上传文件）
+      - name: Start Periodic Upload Daemon
         run: |
+          bash -c '
           while true
           do
               if [ -n "$(ls -A ./logs/*.log 2>/dev/null)" ]; then
-                  # 移动已上传日志到uploaded目录
-                  mv ./logs/*.log ./logs/uploaded/
+                  # 移动待上传日志到临时目录
+                  mkdir -p ./logs/to_upload
+                  mv ./logs/*.log ./logs/to_upload/
               fi
-              sleep 300
-          done &
+              sleep 300  # 每5分钟检查一次
+          done
+          ' &
           echo "UPLOADER_PID=$!" >> "$GITHUB_ENV"
         shell: bash
 
-      # 7. 赋予编译脚本执行权限
+      # 7. 上传待上传日志（纯uses步骤，仅调用action，无run/shell）
+      - name: Upload Pending Logs
+        uses: actions/upload-artifact@v4
+        with:
+          name: image-log-periodic-${{ github.run_id }}
+          path: ./logs/to_upload/*.log
+          retention-days: 90
+        continue-on-error: true
+
+      # 8. 赋予编译脚本执行权限
       - name: Make compile.sh Executable
         run: chmod +x ./compile.sh
         shell: bash
 
-      # 8. 执行镜像编译
+      # 9. 执行镜像编译
       - name: Build OrangePi Image
         id: build
         run: |
@@ -135,8 +139,8 @@ jobs:
         continue-on-error: true
         shell: bash
 
-      # 9. 终止后台进程 + 上传最终日志
-      - name: Stop Daemon & Upload Final Log
+      # 10. 终止后台进程 + 生成最终日志
+      - name: Stop Daemon & Generate Final Log
         if: always()
         run: |
           [ -n "${{ env.BACKUP_PID }}" ] && kill ${{ env.BACKUP_PID }} 2>/dev/null || true
@@ -148,12 +152,10 @@ jobs:
           cp ./build-image.log "${FINAL_LOG}"
           echo -e "\n===== Final Disk Status at ${FINAL_TIMESTAMP} =====" >> "${FINAL_LOG}"
           df -h >> "${FINAL_LOG}"
-          
-          # 上传最终日志（官方action）
           cp ./build-image.log ./logs/image-build-log-PURE.log
         shell: bash
 
-      # 10. 统一上传所有日志（官方action，最稳定）
+      # 11. 上传所有日志（纯uses步骤）
       - name: Upload All Logs
         uses: actions/upload-artifact@v4
         with:
@@ -161,10 +163,10 @@ jobs:
           path: |
             ./logs/*.log
             ./logs/backup/*.log
-            ./logs/uploaded/*.log
+            ./logs/to_upload/*.log
           retention-days: 90
 
-      # 11. 列出镜像文件
+      # 12. 列出镜像文件
       - name: List Generated Image Files
         if: always()
         run: |
@@ -174,7 +176,7 @@ jobs:
           ls -la ./output/images/ || true
         shell: bash
 
-      # 12. 上传镜像产物
+      # 13. 上传镜像产物（纯uses步骤）
       - name: Upload Image Artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -188,7 +190,7 @@ jobs:
           retention-days: 90
           if-no-files-found: error
 
-      # 13. 最终清理
+      # 14. 最终清理
       - name: Final Cleanup
         if: always()
         run: |

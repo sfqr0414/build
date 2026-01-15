@@ -1,35 +1,21 @@
-name: Generate OrangePi5-Max Gnome Image (Final Locked Edition)
+name: Generate OrangePi5-Max Gnome Image
+
 on:
   workflow_dispatch:
     inputs:
-      board:
-        required: true
-        default: 'orangepi5-max'
-        type: string
-      kernel:
-        required: true
-        default: 'edge'
-        type: string
-      release:
-        required: true
-        default: 'plucky'
-        type: string
-      desktop_env:
-        required: true
-        default: 'gnome'
-        type: string
+      board: { required: true, default: 'orangepi5-max', type: string }
+      kernel: { required: true, default: 'edge', type: string }
+      release: { required: true, default: 'plucky', type: string }
+      desktop_env: { required: true, default: 'gnome', type: string }
 
 jobs:
   build-and-upload-image:
     runs-on: ubuntu-24.04
     timeout-minutes: 360
     env:
-      USE_TMPFS: "no"
-      GIST_DESCRIPTION: "OrangePi5-Max Build Logs (Emergency Backup)"
-      DISK_WARNING_THRESHOLD: 1024  # 1GB预警阈值（单位：MB）
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
-      # 🧹 彻底清理磁盘空间（严格保留你的代码，禁止修改）
-      - name: 🧹 彻底清理磁盘空间（解决No space left）
+      - name: Extreme Cleanup
         run: |
           sudo rm -rf /home/runner/actions-runner/cached/_diag/* || true
           sudo rm -rf /home/runner/_diag/* || true
@@ -41,140 +27,49 @@ jobs:
           sudo rm -rf ${{ github.workspace }}/build/* ${{ github.workspace }}/images/* || true
           sudo rm -rf /tmp/* /var/tmp/* || true
           df -h
-        shell: bash
-        timeout-minutes: 5
 
-      # 2. 检出代码
       - name: Checkout Repository
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-        timeout-minutes: 1
 
-      # 3. 安装依赖（精简，确保核心工具可用）
-      - name: Install Dependencies
+      - name: Start Emergency Log Watchdog
         run: |
-          sudo apt update -y >/dev/null 2>&1
-          sudo apt install -y --no-install-recommends \
-            git build-essential curl wget unzip zip qemu-user-static binfmt-support python3 python3-pip \
-            rsync bc bison flex libssl-dev parted dosfstools squashfs-tools imagemagick jq zstd
-        shell: bash
-        timeout-minutes: 5
-
-      # 4. 初始化日志+容错Gist创建（三重备份兜底）
-      - name: Init Log & Emergency Backup (Gist+Local+API)
-        run: |
-          mkdir -p ./logs ./logs/emergency-backup
           touch ./build-image.log
-          
-          # 初始化日志（含清理后磁盘信息）
-          INIT_TIMESTAMP=$(date +%Y%m%d-%H%M%S)
-          echo "===== Build Started at ${INIT_TIMESTAMP} =====" >> ./build-image.log
-          echo "===== Initial Disk Status =====" >> ./build-image.log
-          df -h >> ./build-image.log
-          
-          # 容错Gist创建（失败不中断）
-          GIST_RESPONSE=$(gh gist create --description "${{ env.GIST_DESCRIPTION }}" ./build-image.log 2>/dev/null || true)
-          GIST_ID=$(echo "${GIST_RESPONSE}" | grep -oP 'gist\.github\.com/\K[^/]+' | head -n1)
-          GIST_URL=$(echo "${GIST_RESPONSE}" | awk '{print $1}')
-          
-          # Gist失败时切换本地备份
-          if [ -z "${GIST_ID}" ] || [ "${GIST_URL}" = "" ]; then
-              echo "⚠️ Gist创建失败，启用本地应急备份"
-              EMERGENCY_LOCAL_LOG="./logs/emergency-backup/image-log-INIT-${INIT_TIMESTAMP}.log"
-              cp ./build-image.log "${EMERGENCY_LOCAL_LOG}"
-              echo "EMERGENCY_GIST_ID=local-backup" >> "$GITHUB_ENV"
-              echo "EMERGENCY_GIST_URL=local:${EMERGENCY_LOCAL_LOG}" >> "$GITHUB_ENV"
-          else
-              echo "✅ 紧急Gist创建成功：${GIST_URL}"
-              echo "EMERGENCY_GIST_ID=${GIST_ID}" >> "$GITHUB_ENV"
-              echo "EMERGENCY_GIST_URL=${GIST_URL}" >> "$GITHUB_ENV"
-          fi
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        shell: bash
-
-      # 5. 启动日志救援守护进程（10分钟磁盘检查+预警）
-      - name: Start Log Rescue Daemon (Disk Watchdog)
-        run: |
+          # 创建一个临时的 Gist 用于存放实时日志（如果权限允许）
+          # 或者直接每隔 5 分钟在控制台打印最后 50 行并检查磁盘
           bash -c '
-          GIST_ID="${{ env.EMERGENCY_GIST_ID }}"
-          GIST_URL="${{ env.EMERGENCY_GIST_URL }}"
-          THRESHOLD=${{ env.DISK_WARNING_THRESHOLD }}
-          GITHUB_TOKEN="${{ secrets.GITHUB_TOKEN }}"
-          RUN_ID="${{ github.run_id }}"
-          OWNER="${{ github.repository_owner }}"
-          REPO_NAME="${{ github.event.repository.name }}"
-          
           while true
           do
-              sleep 600  # 每10分钟检查一次
-              TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+              # 每 10 分钟执行一次检查
+              sleep 600
+              echo "--- EMERGENCY WATCHDOG CHECK ---"
+              TIMESTAMP=$(date +%H:%M:%S)
+              AVAIL=$(df / | tail -1 | awk "{print \$4}")
+              echo "Time: $TIMESTAMP | Available Space: ${AVAIL}KB"
               
-              # 备份日志（兼容Gist/本地）
-              if [ "${GIST_ID}" != "local-backup" ]; then
-                  gh gist edit "${GIST_ID}" --file ./build-image.log 2>/dev/null || true
-              else
-                  LOCAL_BACKUP="./logs/emergency-backup/image-log-TEMP-${TIMESTAMP}.log"
-                  cp ./build-image.log "${LOCAL_BACKUP}"
-              fi
+              # 打印最后 50 行日志到控制台，确保即使崩溃，网页端也能看到最后进度
+              echo ">>> Last 50 lines of build log:"
+              tail -n 50 ./build-image.log
               
-              # 检查磁盘空间
-              AVAILABLE_SPACE=$(df -Pm / | tail -n1 | awk '{print $4}')
-              echo -e "\n===== Disk Check at ${TIMESTAMP} =====" >> ./build-image.log
-              echo "Available Space: ${AVAILABLE_SPACE} MB" >> ./build-image.log
-              df -h >> ./build-image.log
-              
-              # 磁盘预警+紧急救援
-              if [ "${AVAILABLE_SPACE}" -lt "${THRESHOLD}" ]; then
-                  echo -e "\n⚠️  DISK SPACE WARNING: Available < ${THRESHOLD} MB" >> ./build-image.log
-                  echo "===== Top 15 Large Directories =====" >> ./build-image.log
-                  du -sh /* 2>/dev/null | sort -rh | head -n15 >> ./build-image.log
-                  
-                  # 三重紧急备份
-                  if [ "${GIST_ID}" != "local-backup" ]; then
-                      gh gist edit "${GIST_ID}" --file ./build-image.log 2>/dev/null || true
-                  fi
-                  EMERGENCY_LOCAL="./logs/emergency-backup/image-log-EMERGENCY-${TIMESTAMP}.log"
-                  cp ./build-image.log "${EMERGENCY_LOCAL}"
-                  
-                  # API上传兜底
-                  UPLOAD_RESPONSE=$(gh api --method POST "/repos/${OWNER}/${REPO_NAME}/actions/runs/${RUN_ID}/artifacts" \
-                    -f name="image-log-EMERGENCY-${TIMESTAMP}" -f artifact_type="file" -f expires_in=90 2>/dev/null)
-                  UPLOAD_URL=$(echo "${UPLOAD_RESPONSE}" | jq -r '.upload_url')
-                  [ "${UPLOAD_URL}" != "null" ] && curl -X PUT "${UPLOAD_URL}" \
-                    -H "Authorization: token ${GITHUB_TOKEN}" \
-                    -H "Content-Type: application/octet-stream" --data-binary "@./build-image.log" --silent >/dev/null 2>&1 || true
-                  
-                  # 控制台预警+强制终止编译
-                  echo -e "\n=================================================="
-                  echo "⚠️  DISK SPACE EXHAUSTED SOON! Available: ${AVAILABLE_SPACE} MB"
-                  echo "📁 Top Space Consumers:"
-                  du -sh /* 2>/dev/null | sort -rh | head -n10
-                  echo "📝 Emergency Backup: ${GIST_URL}"
-                  echo "=================================================="
-                  pkill -f "compile.sh" || true
-                  exit 0
+              # 临界预警：如果空间少于 1.5GB (1572864 KB)
+              if [ "$AVAIL" -lt 1572864 ]; then
+                echo "!!! CRITICAL: DISK SPACE ALMOST FULL !!!"
+                echo "Attempting to sync logs before crash..."
+                # 这里可以尝试使用 gh gist create ./build-image.log (需要 gist 权限)
+                # 或者直接打印完整的 df 信息分析哪里占用了空间
+                du -sh /* 2>/dev/null | sort -rh | head -n 10
+                exit 1
               fi
           done
           ' &
-          echo "RESCUE_DAEMON_PID=$!" >> "$GITHUB_ENV"
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          echo $! > watchdog.pid
         shell: bash
 
-      # 6. 编译镜像（实时日志+无缓冲）
-      - name: Build OrangePi Image (Log Streaming)
-        id: build
+      - name: Build OrangePi Image
         run: |
-          echo "=== 编译参数 ==="
-          echo "BOARD: ${{ github.event.inputs.board }}"
-          echo "BRANCH: ${{ github.event.inputs.kernel }}"
-          echo "RELEASE: ${{ github.event.inputs.release }}"
-          echo "USE_TMPFS: ${{ env.USE_TMPFS }}"
-          echo "Emergency Backup: ${{ env.EMERGENCY_GIST_URL }}"
-          
-          # stdbuf按行刷新，确保临终日志实时输出
+          chmod +x ./compile.sh
+          # stdbuf -oL 确保输出是行缓冲的，防止因崩溃导致缓冲区日志丢失
+          # sed 移除颜色代码减小日志体积
+          export USE_TMPFS=no
           stdbuf -oL ./compile.sh build \
             BOARD=${{ github.event.inputs.board }} \
             BRANCH=${{ github.event.inputs.kernel }} \
@@ -183,54 +78,11 @@ jobs:
             DESKTOP_APPGROUPS_SELECTED='browsers desktop_tools editors multimedia' \
             DESKTOP_ENVIRONMENT=${{ github.event.inputs.desktop_env }} \
             DESKTOP_ENVIRONMENT_CONFIG_NAME=config_base \
-            KERNEL_CONFIGURE=no \
             RELEASE=${{ github.event.inputs.release }} \
             ENABLE_EXTENSIONS=override-kernel \
-            COMPRESS_OUTPUT=zstd \
-            NO_BTF=yes \
-            CLEAN_LEVEL=full \
-            2>&1 | stdbuf -oL tee -a ./build-image.log
+            2>&1 | stdbuf -oL tee >(sed 's/\x1B\[[0-9;]*[a-zA-Z]//g' >> ./build-image.log)
         continue-on-error: true
-        shell: bash
 
-      # 7. 终止守护进程+最终三重备份
-      - name: Stop Daemon & Final Backup
-        if: always()
-        run: |
-          # 终止守护进程
-          [ -n "${{ env.RESCUE_DAEMON_PID }}" ] && kill ${{ env.RESCUE_DAEMON_PID }} 2>/dev/null || true
-          
-          # 补充最终磁盘状态
-          FINAL_TIMESTAMP=$(date +%Y%m%d-%H%M%S)
-          echo -e "\n===== Build Finished at ${FINAL_TIMESTAMP} =====" >> ./build-image.log
-          echo "===== Final Disk Status =====" >> ./build-image.log
-          df -h >> ./build-image.log
-          
-          # 三重最终备份
-          GIST_ID="${{ env.EMERGENCY_GIST_ID }}"
-          if [ "${GIST_ID}" != "local-backup" ]; then
-              gh gist edit "${GIST_ID}" --file ./build-image.log 2>/dev/null || true
-          fi
-          FINAL_LOCAL="./logs/emergency-backup/image-log-FINAL-${FINAL_TIMESTAMP}.log"
-          cp ./build-image.log "${FINAL_LOCAL}"
-          
-          # API上传兜底
-          UPLOAD_RESPONSE=$(gh api --method POST "/repos/${{ github.repository_owner }}/${{ github.event.repository.name }}/actions/runs/${{ github.run_id }}/artifacts" \
-            -f name="image-log-FINAL-${FINAL_TIMESTAMP}" -f artifact_type="file" -f expires_in=90 2>/dev/null)
-          UPLOAD_URL=$(echo "${UPLOAD_RESPONSE}" | jq -r '.upload_url')
-          [ "${UPLOAD_URL}" != "null" ] && curl -X PUT "${UPLOAD_URL}" \
-            -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-            -H "Content-Type: application/octet-stream" --data-binary "@./build-image.log" --silent >/dev/null 2>&1 || true
-          
-          echo -e "\n📝 最终备份完成："
-          echo "Emergency Backup: ${{ env.EMERGENCY_GIST_URL }}"
-          echo "Local Final Backup: ${FINAL_LOCAL}"
-          echo "Artifact: https://github.com/${{ github.repository_owner }}/${{ github.event.repository.name }}/actions/runs/${{ github.run_id }}/artifacts"
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        shell: bash
-
-      # 8. 列出产物+磁盘最终状态
       - name: List Products & Final Disk Check
         if: always()
         run: |
@@ -242,9 +94,6 @@ jobs:
           df -h
         shell: bash
 
-
-
-      # 9. 上传镜像产物（若成功生成）
       - name: Upload Image Artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -258,20 +107,16 @@ jobs:
           retention-days: 90
           if-no-files-found: warn
 
-      # 10. 上传应急备份日志（确保100%可恢复）
-      - name: Upload Emergency Backup Logs
+      - name: Upload Logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: image-log-emergency-backup-${{ github.run_id }}
-          path: ./logs/emergency-backup/*.log
-          retention-days: 90
-          if-no-files-found: warn
+          name: build-log-final
+          path: ./build-image.log
 
-      # 11. 最终清理（不触碰你的清理逻辑）
-      - name: Final Cleanup
+      - name: Stop Watchdog
         if: always()
         run: |
-          sudo rm -rf ./build ./output ./logs ./build-image.log
-          sudo sync
-        shell: bash
+          [ -f watchdog.pid ] && kill $(cat watchdog.pid) || true
+
+      

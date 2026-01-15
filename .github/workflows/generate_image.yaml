@@ -1,4 +1,4 @@
-name: Generate OrangePi5-Max Gnome Image (Gist Backup Mode)
+name: Generate OrangePi5-Max Gnome Image
 
 on:
   workflow_dispatch:
@@ -17,7 +17,7 @@ jobs:
       GH_TOKEN: ${{ secrets.GIST_PAT }} 
     steps:
       # 1. 极致清理
-      - name: Extreme Cleanup
+      - name: Get more disk space
         run: |
           sudo rm -rf /home/runner/actions-runner/cached/_diag/* || true
           sudo rm -rf /home/runner/_diag/* || true
@@ -73,23 +73,24 @@ jobs:
           echo $! > watchdog.pid
         shell: bash
 
-      # 3. 执行编译 (强制行缓冲输出)
+      # 步骤4：执行编译脚本生成镜像
       - name: Build OrangePi Image
         run: |
-          chmod +x ./compile.sh
-          export USE_TMPFS=no
-          # stdbuf -oL 确保每一行日志都立即写入文件供后台进程读取
           ./compile.sh build \
             BOARD=${{ github.event.inputs.board }} \
             BRANCH=${{ github.event.inputs.kernel }} \
             BUILD_DESKTOP=yes \
             BUILD_MINIMAL=no \
-            DESKTOP_APPGROUPS_SELECTED='browsers desktop_tools editors multimedia' \
+            DESKTOP_APPGROUPS_SELECTED='browsers chat desktop_tools editors email internet multimedia office programming remote_desktop' \
             DESKTOP_ENVIRONMENT=${{ github.event.inputs.desktop_env }} \
             DESKTOP_ENVIRONMENT_CONFIG_NAME=config_base \
+            KERNEL_CONFIGURE=no \
             RELEASE=${{ github.event.inputs.release }} \
             ENABLE_EXTENSIONS=override-kernel \
-            2>&1 | stdbuf -oL tee >(sed 's/\x1B\[[0-9;]*[a-zA-Z]//g' >> ./build-image.log)
+            2>&1 | tee >(sed 's/\x1B\[[0-9;]*[a-zA-Z]//g' > build-image.log)
+        env:
+          VERBOSE: 1
+          USE_TMPFS: no
 
       - name: List Products & Final Disk Check
         if: always()

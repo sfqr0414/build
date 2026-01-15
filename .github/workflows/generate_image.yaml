@@ -79,7 +79,7 @@ jobs:
           chmod +x ./compile.sh
           export USE_TMPFS=no
           # stdbuf -oL 确保每一行日志都立即写入文件供后台进程读取
-          stdbuf -oL ./compile.sh build \
+          ./compile.sh build \
             BOARD=${{ github.event.inputs.board }} \
             BRANCH=${{ github.event.inputs.kernel }} \
             BUILD_DESKTOP=yes \

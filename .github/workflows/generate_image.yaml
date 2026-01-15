@@ -1,4 +1,4 @@
-name: Generate OrangePi5-Max Gnome Image
+name: Generate OrangePi5-Max Gnome Image (Gist Backup Mode)
 
 on:
   workflow_dispatch:
@@ -13,8 +13,10 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 360
     env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # 使用具有 gist 权限的 PAT
+      GH_TOKEN: ${{ secrets.GIST_PAT }} 
     steps:
+      # 1. 极致清理
       - name: Extreme Cleanup
         run: |
           sudo rm -rf /home/runner/actions-runner/cached/_diag/* || true
@@ -31,45 +33,48 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Start Emergency Log Watchdog
+      # 2. 启动 Gist 监控守护进程
+      - name: Start Gist Backup Watchdog
         run: |
           touch ./build-image.log
-          # 创建一个临时的 Gist 用于存放实时日志（如果权限允许）
-          # 或者直接每隔 5 分钟在控制台打印最后 50 行并检查磁盘
-          bash -c '
+          # 先创建一个初始 Gist 并记录 ID
+          GIST_URL=$(gh gist create ./build-image.log -d "Build Log for ${{ github.run_id }}" --public=false)
+          GIST_ID=$(echo $GIST_URL | awk -F/ '{print $NF}')
+          echo "GIST_ID=$GIST_ID" >> $GITHUB_ENV
+          echo "Initial Gist created: $GIST_URL"
+
+          # 后台监控与上传
+          bash -c "
           while true
           do
-              # 每 10 分钟执行一次检查
-              sleep 600
-              echo "--- EMERGENCY WATCHDOG CHECK ---"
-              TIMESTAMP=$(date +%H:%M:%S)
-              AVAIL=$(df / | tail -1 | awk "{print \$4}")
-              echo "Time: $TIMESTAMP | Available Space: ${AVAIL}KB"
+              sleep 600 # 每10分钟备份一次
+              TIMESTAMP=\$(date +%H:%M:%S)
+              AVAIL=\$(df / | tail -1 | awk '{print \$4}')
               
-              # 打印最后 50 行日志到控制台，确保即使崩溃，网页端也能看到最后进度
-              echo ">>> Last 50 lines of build log:"
-              tail -n 50 ./build-image.log
+              echo \"--- Log Snapshot at \$TIMESTAMP (Avail: \${AVAIL}KB) ---\" >> ./build-image.log
               
-              # 临界预警：如果空间少于 1.5GB (1572864 KB)
-              if [ "$AVAIL" -lt 1572864 ]; then
-                echo "!!! CRITICAL: DISK SPACE ALMOST FULL !!!"
-                echo "Attempting to sync logs before crash..."
-                # 这里可以尝试使用 gh gist create ./build-image.log (需要 gist 权限)
-                # 或者直接打印完整的 df 信息分析哪里占用了空间
-                du -sh /* 2>/dev/null | sort -rh | head -n 10
+              # 临终备份：推送到 Gist
+              # 使用 edit 命令覆盖原有 Gist 内容，不产生新文件
+              gh gist edit $GIST_ID ./build-image.log > /dev/null 2>&1 && echo \"Gist backup successful at \$TIMESTAMP\"
+              
+              # 磁盘预警：少于 2GB 则强制退出前最后同步一次
+              if [ \"\$AVAIL\" -lt 2097152 ]; then
+                echo \"DISK CRITICAL! Last sync...\"
+                du -sh /* 2>/dev/null | sort -rh | head -n 5 >> ./build-image.log
+                gh gist edit $GIST_ID ./build-image.log
                 exit 1
               fi
           done
-          ' &
+          " &
           echo $! > watchdog.pid
         shell: bash
 
+      # 3. 执行编译 (强制行缓冲输出)
       - name: Build OrangePi Image
         run: |
           chmod +x ./compile.sh
-          # stdbuf -oL 确保输出是行缓冲的，防止因崩溃导致缓冲区日志丢失
-          # sed 移除颜色代码减小日志体积
           export USE_TMPFS=no
+          # stdbuf -oL 确保每一行日志都立即写入文件供后台进程读取
           stdbuf -oL ./compile.sh build \
             BOARD=${{ github.event.inputs.board }} \
             BRANCH=${{ github.event.inputs.kernel }} \
@@ -106,17 +111,24 @@ jobs:
             ./output/images/*.md5sum
           retention-days: 90
           if-no-files-found: warn
+          
+      # 4. 停止并上传最后状态
+      - name: Stop Watchdog & Final Gist Sync
+        if: always()
+        run: |
+          [ -f watchdog.pid ] && kill \$(cat watchdog.pid) || true
+          if [ -n "$GIST_ID" ]; then
+            echo "Performing final Gist sync..."
+            gh gist edit $GIST_ID ./build-image.log || true
+            echo "Final Gist Link: gist.github.com"
+          fi
+        shell: bash
 
-      - name: Upload Logs
+      - name: Upload Logs to Artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: build-log-final
           path: ./build-image.log
-
-      - name: Stop Watchdog
-        if: always()
-        run: |
-          [ -f watchdog.pid ] && kill $(cat watchdog.pid) || true
 
       

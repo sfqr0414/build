@@ -24,28 +24,30 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 360
     env:
-      USE_TMPFS: "no"  # 强制禁用TMPFS，避免内存空间爆炸
+      USE_TMPFS: "no"
       GIST_DESCRIPTION: "OrangePi5-Max Build Logs (Emergency Backup)"
       DISK_WARNING_THRESHOLD: 1024  # 1GB预警阈值（单位：MB）
     steps:
-      # 1. 超深度磁盘清理（释放35+GB，为编译预留最大空间）
-      - name: Ultra-Deep Disk Cleanup
+      # 1. 修复版超深度磁盘清理（增加容错，避免步骤中断）
+      - name: Ultra-Deep Disk Cleanup (Fault-Tolerant)
         run: |
+          set -euo pipefail
           echo "=== 清理前磁盘状态 ==="
           df -h
-          du -sh /* 2>/dev/null | sort -rh | head -n 15  # 列出最大的15个目录
+          # 容错：du命令失败不影响后续（部分目录无权限访问）
+          du -sh /* 2>/dev/null | sort -rh | head -n 15 || true
           
-          # 优先级1：删除超大型冗余目录（合计释放20-30GB）
-          sudo rm -rf /opt/hostedtoolcache/*  # 工具链缓存（Node.js/Python/Go等）
-          sudo rm -rf /usr/lib/jvm/*          # 多余JDK版本
-          sudo rm -rf /var/lib/docker/*       # Docker镜像缓存
-          sudo rm -rf /root/.cache/*          # 用户缓存（pip/npm等）
+          # 优先级1：删除超大型冗余目录（加|| true容错，不存在的目录不报错）
+          sudo rm -rf /opt/hostedtoolcache/* || true  # 工具链缓存
+          sudo rm -rf /usr/lib/jvm/* || true          # 多余JDK
+          sudo rm -rf /var/lib/docker/* || true       # Docker缓存
+          sudo rm -rf /root/.cache/* || true          # 用户缓存
           
-          # 优先级2：常规清理
-          sudo docker system prune -a -f --volumes >/dev/null 2>&1
-          sudo apt clean && sudo apt autoremove -y --purge >/dev/null 2>&1
-          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/miniconda
-          sudo rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* /var/log/*.log /var/cache/apt/*
+          # 优先级2：常规清理（简化命令，减少失败概率）
+          sudo apt clean || true
+          sudo apt autoremove -y --purge || true
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/miniconda || true
+          sudo rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* /var/log/*.log /var/cache/apt/* || true
           sudo sync
           
           echo -e "\n=== 清理后磁盘状态 ==="

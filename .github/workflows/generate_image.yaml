@@ -37,6 +37,10 @@ jobs:
       - name: Start Gist Backup Watchdog
         run: |
           touch ./build-image.log
+          # 初始化日志文件，确保不为空
+          echo "=== Build Start: $(date) ===" > ./build-image.log
+          echo "Board: ${{ github.event.inputs.board }}" >> ./build-image.log
+          
           # 先创建一个初始 Gist 并记录 ID
           GIST_URL=$(gh gist create ./build-image.log -d "Build Log for ${{ github.run_id }}" --public=false)
           GIST_ID=$(echo $GIST_URL | awk -F/ '{print $NF}')

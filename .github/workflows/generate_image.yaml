@@ -48,7 +48,6 @@ jobs:
             rsync bc bison flex libssl-dev parted dosfstools \
             squashfs-tools imagemagick jq zstd
 
-      # 2. 启动 Gist 监控守护进程
       - name: Start Gist Backup Watchdog
         run: |
           touch ./build-image.log
@@ -61,7 +60,7 @@ jobs:
           GIST_ID=$(echo $GIST_URL | awk -F/ '{print $NF}')
           echo "GIST_ID=$GIST_ID" >> $GITHUB_ENV
           echo "Initial Gist created: $GIST_URL"
-
+      
           # 后台监控与上传
           bash -c "
           while true
@@ -70,19 +69,33 @@ jobs:
               TIMESTAMP=\$(date +%H:%M:%S)
               AVAIL=\$(df / | tail -1 | awk '{print \$4}')
               
-              echo \"--- Log Snapshot at \$TIMESTAMP (Avail: \${AVAIL}KB) ---\" >> ./build-image.log
+              # 步骤1：创建原始日志的临时副本（每次循环都重新创建，确保基于最新原始日志）
+              cp ./build-image.log ./build-image.tmp.log
               
-              # 临终备份：推送到 Gist
+              # 步骤2：将磁盘状态信息追加到临时副本中，不改动原始文件
+              echo \"--- Log Snapshot at \$TIMESTAMP (Avail: \${AVAIL}KB) ---\" >> ./build-image.tmp.log
+              echo -e \"\\n===== Disk Status at \${TIMESTAMP} =====\" >> ./build-image.tmp.log
+              df -h >> ./build-image.tmp.log
+              
+              # 步骤3：使用临时副本更新 Gist，原始日志保持不变
               # 使用 edit 命令覆盖原有 Gist 内容，不产生新文件
-              gh gist edit $GIST_ID ./build-image.log > /dev/null 2>&1 && echo \"Gist backup successful at \$TIMESTAMP\"
+              gh gist edit $GIST_ID ./build-image.tmp.log > /dev/null 2>&1 && echo \"Gist backup successful at \$TIMESTAMP\"
               
               # 磁盘预警：少于 2GB 则强制退出前最后同步一次
               if [ \"\$AVAIL\" -lt 2097152 ]; then
                 echo \"DISK CRITICAL! Last sync...\"
-                du -sh /* 2>/dev/null | sort -rh | head -n 5 >> ./build-image.log
-                gh gist edit $GIST_ID ./build-image.log
+                # 预警信息：同样先追加到原始日志，再更新临时副本
+                echo \"DISK CRITICAL! Last sync at \$TIMESTAMP\" >> ./build-image.log
+                # 复制最新原始日志到临时副本，追加磁盘详情到临时副本
+                cp ./build-image.log ./build-image.tmp.log
+                du -sh /* 2>/dev/null | sort -rh | head -n 5 >> ./build-image.tmp.log
+                # 用最终临时副本更新 Gist
+                gh gist edit $GIST_ID ./build-image.tmp.log
                 exit 1
               fi
+              
+              # 可选：清理临时副本（如需节省磁盘空间，每次循环后删除）
+              rm -f ./build-image.tmp.log
           done
           " &
           echo $! > watchdog.pid

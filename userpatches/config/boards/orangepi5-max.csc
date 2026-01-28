@@ -16,6 +16,7 @@ BOOT_SPI_RKSPI_LOADER="yes"
 IMAGE_PARTITION_TABLE="gpt"
 #enable_extension "bcmdhd"
 BCMDHD_TYPE="sdio"
+unset uboot_custom_postprocess
 
 # Mainline U-Boot for edge kernel
 function post_family_config_branch_edge__orangepi5max_use_mainline_uboot() {

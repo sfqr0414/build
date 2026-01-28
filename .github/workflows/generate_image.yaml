@@ -134,7 +134,7 @@ jobs:
             DESKTOP_ENVIRONMENT_CONFIG_NAME=config_base \
             KERNEL_CONFIGURE=no \
             RELEASE=${{ github.event.inputs.release }} \
-            ENABLE_EXTENSIONS=override-kernel \
+            ENABLE_EXTENSIONS='override-kernel bcmdhd-install preset-firstrun' \
             2>&1 | tee >(sed 's/\x1B\[[0-9;]*[a-zA-Z]//g' > build-image.log)
             mv "./config/boards.bak" "./config/boards"
         env:
@@ -169,7 +169,7 @@ jobs:
       - name: Stop Watchdog & Final Gist Sync
         if: always()
         run: |
-          [ -f watchdog.pid ] && kill \$(cat watchdog.pid) || true
+          [ -f watchdog.pid ] && kill $(cat watchdog.pid) || true
           if [ -n "$GIST_ID" ]; then
             echo "Performing final Gist sync..."
             gh gist edit $GIST_ID ./build-image.log || true

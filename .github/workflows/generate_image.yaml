@@ -119,6 +119,8 @@ jobs:
       # 步骤4：执行编译脚本生成镜像
       - name: Build OrangePi Image
         run: |
+          mv "./config/boards" "./config/boards.bak"
+          ls -l ./config
           ./compile.sh build \
             BOARD=${{ github.event.inputs.board }} \
             BRANCH=${{ github.event.inputs.kernel }} \
@@ -131,6 +133,7 @@ jobs:
             RELEASE=${{ github.event.inputs.release }} \
             ENABLE_EXTENSIONS=override-kernel \
             2>&1 | tee >(sed 's/\x1B\[[0-9;]*[a-zA-Z]//g' > build-image.log)
+            mv "./config/boards.bak" "./config/boards"
         env:
           VERBOSE: 1
           USE_TMPFS: no

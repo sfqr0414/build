@@ -100,6 +100,21 @@ jobs:
           " &
           echo $! > watchdog.pid
         shell: bash
+      
+      - name: Prepare /mnt directory
+        run: |
+          # 将 /mnt 的所有权更改为当前执行用户
+          sudo chown -R $USER:$USER /mnt
+          # 显示原来的mnt内容
+          ls /mnt
+          # 创建工作目录
+          mkdir -p /mnt/stage
+          # 显示修改后的mnt内容
+          ls /mnt
+          # 创建缓存目录的符号链接
+          ln -s cache /mnt/stage || true
+          # 显示当前工作目录内容
+          ls ./
 
       # 步骤4：执行编译脚本生成镜像
       - name: Build OrangePi Image

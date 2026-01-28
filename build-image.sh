@@ -5,10 +5,8 @@ cleanup() {
     exit_code=${1:-$?}
     DOWNLOAD_DIR="${SCRIPT_WORK_DIR}/cache/downloads/local-kernel-git"
 
-    # if [[ -d "$DOWNLOAD_DIR" ]]; then
-       # sudo rm -rf "$DOWNLOAD_DIR"
-    # fi
-    
+    mv "${BAORDS_DIR}.bak" "${BAORDS_DIR}"
+
     if [[ "$exit_code" -ne 0 ]]; then
         echo "❌ Script exited abnormally"
     fi
@@ -25,6 +23,9 @@ rm -rf "${SCRIPT_WORK_DIR}/output/cache" \
        "${SCRIPT_WORK_DIR}/output/logs" \
        "${SCRIPT_WORK_DIR}/build-image.log"
 
+BAORDS_DIR="${SCRIPT_WORK_DIR}/config/boards"
+mv "${BAORDS_DIR}" "${BAORDS_DIR}.bak"
+
 ./compile.sh build \
     BOARD=orangepi5-max \
     BRANCH=edge \
@@ -35,5 +36,5 @@ rm -rf "${SCRIPT_WORK_DIR}/output/cache" \
     DESKTOP_ENVIRONMENT_CONFIG_NAME=config_base \
     KERNEL_CONFIGURE=no \
     RELEASE=plucky \
-    ENABLE_EXTENSIONS=override-kernel \
+    ENABLE_EXTENSIONS='override-kernel bcmdhd-install preset-firstrun' \
 2>&1 | tee >(sed 's/\x1B\[[0-9;]*[a-zA-Z]//g' > build-image.log)

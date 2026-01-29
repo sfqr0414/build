@@ -34,6 +34,7 @@ function post_family_config_branch_edge__orangepi5max_use_mainline_uboot() {
 
 # Ensure vendor blobs forced even after family late hooks run
 function late_family_config__999_orangepi5max_force_vendor_blobs() {
+    exit 0
 	display_alert "$BOARD" "Late: re-enforce vendor blobs (disable mainline u-boot build)" "info"
 	# Re-assert vendor blobs and prevent mainline u-boot build
 	# Use vendor-only boot scenario and ensure miniloader is set for RK3588

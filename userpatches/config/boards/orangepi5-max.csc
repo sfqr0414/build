@@ -58,11 +58,27 @@ function late_family_config__999_orangepi5max_force_vendor_blobs() {
 	display_alert "$BOARD" "BOOT_SCENARIO=${BOOT_SCENARIO} BOOTDIR=${BOOTDIR} BOOTBRANCH=${BOOTBRANCH} UBOOT_TARGET_MAP=${UBOOT_TARGET_MAP}" "debug"
 }
 
+function post_family_config__orangepi5max_override_uboot() {
+	display_alert "orangepi5-max" "Installing uboot_custom_postprocess override (board-level post_family_config hook)" "info"
 
-# =================== 钩子1：U-Boot定制后处理（优先级100） =====================
-function post_uboot_custom_postprocess__100_my(){
-   echo "调用钩子 post_uboot_custom_postprocess__100_my"
-   # exit 0
+	# If family defined uboot_custom_postprocess, save its definition to __orig_uboot_custom_postprocess
+	if [[ "$(type -t uboot_custom_postprocess)" == "function" ]]; then
+		if [[ "$(type -t __orig_uboot_custom_postprocess)" != "function" ]]; then
+			# Use declare -f to capture function body and create a copy under a new name.
+			# This avoids recursion (we copy the original BEFORE we override it).
+			orig_def="$(declare -f uboot_custom_postprocess)"
+			# Replace the function name in the first line to create a new function name
+			orig_def="${orig_def#uboot_custom_postprocess}"
+			# The safest way: prefix new name + the body; some shells format declare -f differently.
+			# Build a reproducible eval string:
+			eval "__orig_uboot_custom_postprocess ${orig_def}"
+			display_alert "orangepi5-max" "Saved existing uboot_custom_postprocess to __orig_uboot_custom_postprocess" "debug"
+		fi
+	fi
+
+# Now override the function that the framework will call directly
+function uboot_custom_postprocess() {
+	display_alert "orangepi5-max" "Custom uboot_custom_postprocess invoked (override)" "info"
 	[[ -z ${BOOT_SOC} ]] &&
 		exit_with_error "BOOT_SOC not defined for scenario '${BOOT_SCENARIO}' for BOARD'=${BOARD}' and BOOTCONFIG='${BOOTCONFIG}'"
 	display_alert "${BOARD}" "boots with ${BOOT_SCENARIO} scenario" "info"
@@ -248,6 +264,7 @@ function post_family_tweaks__orangepi5max_naming_audios() {
 	echo 'SUBSYSTEM=="sound", ENV{ID_PATH}=="platform-es8388-sound", ENV{SOUND_DESCRIPTION}="ES8388 Audio"' >> $SDCARD/etc/udev/rules.d/90-naming-audios.rules
 
 	return 0
+}
 }
 
 function post_family_tweaks_bsp__orangepi5max_bluetooth() {

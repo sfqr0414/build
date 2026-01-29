@@ -41,7 +41,8 @@ fi
 display_alert "INFO" "Force-apply kernel patches set to: ${FORCE_APPLY_KERNEL_PATCHES}" "info"
 
 # =================== 钩子1：U-Boot定制后处理（优先级100） =====================
-function post_uboot_custom_postprocess__100_my(){
+function post_uboot_custom_postprocess__999_my(){
+   echo "调用钩子 post_uboot_custom_postprocess__999_my"
 	[[ -z ${BOOT_SOC} ]] &&
 		exit_with_error "BOOT_SOC not defined for scenario '${BOOT_SCENARIO}' for BOARD'=${BOARD}' and BOOTCONFIG='${BOOTCONFIG}'"
 	display_alert "${BOARD}" "boots with ${BOOT_SCENARIO} scenario" "info"

@@ -46,3 +46,40 @@ function post_install_kernel_debs__install_bcmdhd_dkms_package() {
 	use_clean_environment="yes" chroot_sdcard_apt_get_install /tmp/${bcmdhd_dkms_file_name}
 	use_clean_environment="yes" chroot_sdcard "rm -f /tmp/bcmdhd*.deb"
 }
+
+function post_customize_image__create_bcmdhd_firmware_softlink() {
+	echo 'Call Hook: create_bcmdhd_firmware_softlink'
+    local original_dir=$(pwd)
+    if [ -d "/usr/lib/firmware/ap6275p" ]; then
+        cd /usr/lib/firmware/ap6275p || return 1
+        local target_files=("config.txt" "nvram_ap6275p.txt" "nvram.txt" "fw_bcmdhd.bin")
+        for file in "${target_files[@]}"; do
+            if [ -e "$file" ]; then
+                mv "$file" "${file}.bak"
+                rm -f "$file"
+            fi
+        done
+        ln -sf config_syn43711a0.txt config.txt
+        ln -sf fw_syn43711a0_sdio.bin fw_bcmdhd.bin
+        ln -sf nvram_AP6275P.txt nvram_ap6275p.txt
+        ln -sf nvram_ap6611s.txt nvram.txt
+        cd - > /dev/null
+    fi
+}
+
+function post_customize_image__300_optimize_ssh_reduce_lantency() {
+	echo 'Call Hook: 300_optimize_ssh_reduce_lantency'
+    SSHD_CONFIG_FILE="/etc/ssh/sshd_config"
+    if [ -f "$SSHD_CONFIG_FILE" ]; then
+        echo "✅ Fount $SSHD_CONFIG_FILE, will modify it."
+		sudo cp /etc/ssh/sshd_config /etc/ssh/sshd_config.bak
+        sudo sed -i \
+          -e 's/^#*\s*UseDNS\s*.*/UseDNS no/' \
+          -e 's/^#*\s*GSSAPIAuthentication\s*.*/GSSAPIAuthentication no/' \
+          -e '/^GSSAPIAuthentication/!a GSSAPIAuthentication no' \
+          -e '/^UseDNS/!a UseDNS no' \
+          /etc/ssh/sshd_config
+    else
+        echo "❌ File $SSHD_CONFIG_FILE does not exist or is not a regular file."
+    fi
+}

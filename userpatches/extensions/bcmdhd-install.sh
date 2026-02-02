@@ -47,39 +47,60 @@ function post_install_kernel_debs__install_bcmdhd_dkms_package() {
 	use_clean_environment="yes" chroot_sdcard "rm -f /tmp/bcmdhd*.deb"
 }
 
+# 1. 固件软链接逻辑修改
 function post_customize_image__create_bcmdhd_firmware_softlink() {
-	echo 'Call Hook: create_bcmdhd_firmware_softlink'
-    local original_dir=$(pwd)
-    if [ -d "/usr/lib/firmware/ap6275p" ]; then
-        cd /usr/lib/firmware/ap6275p || return 1
-        local target_files=("config.txt" "nvram_ap6275p.txt" "nvram.txt" "fw_bcmdhd.bin")
-        for file in "${target_files[@]}"; do
-            if [ -e "$file" ]; then
-                mv "$file" "${file}.bak"
-                rm -f "$file"
-            fi
-        done
-        ln -sf config_syn43711a0.txt config.txt
-        ln -sf fw_syn43711a0_sdio.bin fw_bcmdhd.bin
-        ln -sf nvram_AP6275P.txt nvram_ap6275p.txt
-        ln -sf nvram_ap6611s.txt nvram.txt
-        cd - > /dev/null
-    fi
+    display_alert "Fixing bcmdhd firmware softlinks via chroot" "CustomHook" "info"
+
+    # 使用 HereDoc 将所有指令一次性送入镜像内部执行
+    chroot_sdcard <<-'EOF'
+        FIRMWARE_DIR="/usr/lib/firmware/ap6275p"
+        if [ -d "$FIRMWARE_DIR" ]; then
+            echo "Working inside chroot: $FIRMWARE_DIR"
+            cd "$FIRMWARE_DIR" || exit 1
+            
+            local_target_files=("config.txt" "nvram_ap6275p.txt" "nvram.txt" "fw_bcmdhd.bin")
+            for file in "${local_target_files[@]}"; do
+                if [ -e "$file" ]; then
+                    mv "$file" "${file}.bak" 2>/dev/null
+                    rm -f "$file"
+                fi
+            done
+            
+            # 创建新的软链接
+            ln -sf config_syn43711a0.txt config.txt
+            ln -sf fw_syn43711a0_sdio.bin fw_bcmdhd.bin
+            ln -sf nvram_AP6275P.txt nvram_ap6275p.txt
+            ln -sf nvram_ap6611s.txt nvram.txt
+            echo "Softlinks created successfully."
+        else
+            echo "Directory $FIRMWARE_DIR not found, skipping."
+        fi
+EOF
 }
 
+# 2. SSH 优化逻辑修改
 function post_customize_image__300_optimize_ssh_reduce_lantency() {
-	echo 'Call Hook: 300_optimize_ssh_reduce_lantency'
-    SSHD_CONFIG_FILE="/etc/ssh/sshd_config"
-    if [ -f "$SSHD_CONFIG_FILE" ]; then
-        echo "✅ Fount $SSHD_CONFIG_FILE, will modify it."
-		sudo cp /etc/ssh/sshd_config /etc/ssh/sshd_config.bak
-        sudo sed -i \
-          -e 's/^#*\s*UseDNS\s*.*/UseDNS no/' \
-          -e 's/^#*\s*GSSAPIAuthentication\s*.*/GSSAPIAuthentication no/' \
-          -e '/^GSSAPIAuthentication/!a GSSAPIAuthentication no' \
-          -e '/^UseDNS/!a UseDNS no' \
-          /etc/ssh/sshd_config
-    else
-        echo "❌ File $SSHD_CONFIG_FILE does not exist or is not a regular file."
-    fi
+    display_alert "Optimizing SSH via chroot" "CustomHook" "info"
+
+    chroot_sdcard <<-'EOF'
+        SSHD_CONFIG="/etc/ssh/sshd_config"
+        if [ -f "$SSHD_CONFIG" ]; then
+            echo "✅ Found $SSHD_CONFIG, optimizing..."
+            cp "$SSHD_CONFIG" "${SSHD_CONFIG}.bak"
+            
+            # 修改配置
+            sed -i \
+              -e 's/^#*\s*UseDNS\s*.*/UseDNS no/' \
+              -e 's/^#*\s*GSSAPIAuthentication\s*.*/GSSAPIAuthentication no/' \
+              "$SSHD_CONFIG"
+              
+            # 补齐：如果配置项原本完全不存在则追加
+            grep -q "^GSSAPIAuthentication" "$SSHD_CONFIG" || echo "GSSAPIAuthentication no" >> "$SSHD_CONFIG"
+            grep -q "^UseDNS" "$SSHD_CONFIG" || echo "UseDNS no" >> "$SSHD_CONFIG"
+            
+            echo "SSH optimization: DONE"
+        else
+            echo "❌ File $SSHD_CONFIG does not exist in the rootfs."
+        fi
+EOF
 }

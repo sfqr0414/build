@@ -46,43 +46,48 @@ function post_install_kernel_debs__install_bcmdhd_dkms_package() {
 	use_clean_environment="yes" chroot_sdcard_apt_get_install /tmp/${bcmdhd_dkms_file_name}
 	use_clean_environment="yes" chroot_sdcard "rm -f /tmp/bcmdhd*.deb"
 }
+
 function post_customize_image__create_bcmdhd_firmware_softlink() {
-    display_alert "Fixing bcmdhd firmware softlinks" "CustomHook" "info"
+    display_alert "Fixing firmware softlinks" "CustomHook" "info"
+    local TARGET_DIR="${SDCARD}/usr/lib/firmware/ap6275p"
 
-    read -r -d '' CMD <<-'EOF'
-        FIRMWARE_DIR="/usr/lib/firmware/ap6275p"
-        if [ -d "$FIRMWARE_DIR" ]; then
-            cd "$FIRMWARE_DIR" || exit 1
-            for file in config.txt nvram_ap6275p.txt nvram.txt fw_bcmdhd.bin; do
-                if [ -e "$file" ]; then
-                    mv "$file" "${file}.bak" 2>/dev/null
-                fi
-            done
-            ln -sf config_syn43711a0.txt config.txt
-            ln -sf fw_syn43711a0_sdio.bin fw_bcmdhd.bin
-            ln -sf nvram_AP6275P.txt nvram_ap6275p.txt
-            ln -sf nvram_ap6611s.txt nvram.txt
-        fi
-EOF
-
-    chroot_sdcard "$CMD"
+    if [ -d "$TARGET_DIR" ]; then
+        pushd "$TARGET_DIR" > /dev/null
+        local files=("config.txt" "nvram_ap6275p.txt" "nvram.txt" "fw_bcmdhd.bin")
+        for file in "${files[@]}"; do
+            if [ -e "$file" ]; then
+                mv "$file" "${file}.bak" 2>/dev/null
+                echo "✅ Backed up and removed: $file"
+            fi
+        done
+        ln -sf config_syn43711a0.txt config.txt
+        ln -sf fw_syn43711a0_sdio.bin fw_bcmdhd.bin
+        ln -sf nvram_AP6275P.txt nvram_ap6275p.txt
+        ln -sf nvram_ap6611s.txt nvram.txt
+        echo "✅ Created all firmware softlinks in $TARGET_DIR"
+        popd > /dev/null
+    else
+        echo "⚠️  Target firmware directory not found: $TARGET_DIR"
+    fi
 }
 
 function post_customize_image__300_optimize_ssh_reduce_lantency() {
     display_alert "Optimizing SSH configuration" "CustomHook" "info"
+    local SSHD_CFG="${SDCARD}/etc/ssh/sshd_config"
 
-    read -r -d '' CMD <<-'EOF'
-        SSHD_CONFIG="/etc/ssh/sshd_config"
-        if [ -f "$SSHD_CONFIG" ]; then
-            sed -i \
-              -e 's/^#*\s*UseDNS\s*.*/UseDNS no/' \
-              -e 's/^#*\s*GSSAPIAuthentication\s*.*/GSSAPIAuthentication no/' \
-              "$SSHD_CONFIG"
-            grep -q "^GSSAPIAuthentication" "$SSHD_CONFIG" || echo "GSSAPIAuthentication no" >> "$SSHD_CONFIG"
-            grep -q "^UseDNS" "$SSHD_CONFIG" || echo "UseDNS no" >> "$SSHD_CONFIG"
-        fi
-        systemctl --no-reload enable orangepi5-usb2-init.service >/dev/null 2>&1
-EOF
-
-    chroot_sdcard "$CMD"
+    if [ -f "$SSHD_CFG" ]; then
+        cp "$SSHD_CFG" "${SSHD_CFG}.bak"
+        echo "✅ Backed up $SSHD_CFG to .bak"
+        
+        sed -i \
+          -e 's/^#*\s*UseDNS\s*.*/UseDNS no/' \
+          -e 's/^#*\s*GSSAPIAuthentication\s*.*/GSSAPIAuthentication no/' \
+          -e '/^GSSAPIAuthentication/!a GSSAPIAuthentication no' \
+          -e '/^UseDNS/!a UseDNS no' \
+          "$SSHD_CFG"
+        
+        echo "✅ SSH latency optimization applied to $SSHD_CFG"
+    else
+        echo "⚠️  SSHD config not found at $SSHD_CFG"
+    fi
 }

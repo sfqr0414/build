@@ -164,6 +164,20 @@ jobs:
             ./output/images/*.md5sum
           retention-days: 90
           if-no-files-found: warn
+
+      - name: Upload to GitHub Releases
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          overwrite: true
+          draft: false
+          prerelease: false
+          files: |
+            ./output/images/*.img
+            ./output/images/*.img.xz
+            ./output/images/*.img.zip
+            ./output/images/*.sha256sum
+            ./output/images/*.md5sum
           
       # 4. 停止并上传最后状态
       - name: Stop Watchdog & Final Gist Sync

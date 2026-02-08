@@ -152,19 +152,61 @@ jobs:
           df -h
         shell: bash
 
+      - name: Package Image Zip
+        run: |
+          cd ./output/images/
+          echo "=== 开始打包压缩 ==="
+          
+          IMG_FILE=$(ls *.img 2>/dev/null | head -1)
+          if [ -z "$IMG_FILE" ]; then
+            echo "错误: 未找到 .img 文件"
+            exit 1
+          fi
+          
+          BASE_NAME="${IMG_FILE%.img}"
+          echo "基础文件名: $BASE_NAME"
+          
+          echo "=== 待打包文件 ==="
+          ls -lh "${BASE_NAME}.img" "${BASE_NAME}.img.sha" "${BASE_NAME}.img.txt"
+          
+          echo "正在打包压缩为 ${BASE_NAME}.zip ..."
+          zip -9 "${BASE_NAME}.zip" \
+            "${BASE_NAME}.img" \
+            "${BASE_NAME}.img.sha" \
+            "${BASE_NAME}.img.txt"
+          
+          echo "压缩完成"
+          
+          echo "=== 压缩包信息 ==="
+          ls -lh "${BASE_NAME}.zip"
+          ZIP_SIZE=$(stat -f%z "${BASE_NAME}.zip" 2>/dev/null || stat -c%s "${BASE_NAME}.zip")
+          ZIP_SIZE_GB=$(echo "scale=2; $ZIP_SIZE / 1024 / 1024 / 1024" | bc)
+          echo "压缩包大小: ${ZIP_SIZE_GB} GB"
+          
+          if [ $ZIP_SIZE -gt 2147483648 ]; then
+            echo "警告: 压缩包大小 ${ZIP_SIZE_GB}GB 超过 GitHub Release 2GB 限制"
+            exit 1
+          else
+            echo "压缩包大小符合 GitHub Release 限制"
+          fi
+          
+          echo "生成校验和..."
+          sha256sum "${BASE_NAME}.zip" > "${BASE_NAME}.zip.sha256"
+          
+          echo "=== 最终文件列表 ==="
+          ls -lh *.zip *.sha256
+        shell: bash
+      
       - name: Upload Image Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: orangepi5-max-gnome-image-${{ github.run_id }}
           path: |
-            ./output/images/*.img
-            ./output/images/*.img.xz
-            ./output/images/*.img.zip
-            ./output/images/*.sha256sum
-            ./output/images/*.md5sum
+            ./output/images/*.zip
+            ./output/images/*.zip.sha256
           retention-days: 90
           if-no-files-found: warn
-
+      
       - name: Upload to GitHub Releases
         uses: softprops/action-gh-release@v2
         with:
@@ -172,12 +214,30 @@ jobs:
           overwrite: true
           draft: false
           prerelease: false
+          body: |
+            ## OrangePi 5 Max Gnome 桌面镜像
+            
+            ### 下载说明
+            下载 .zip 文件后解压
+            
+            Windows: 右键解压
+            Linux/macOS:
+            ```bash
+            unzip Armbian-unofficial_*.zip
+            ```
+            
+            ### 压缩包内容
+            - *.img 系统镜像文件
+            - *.img.sha SHA1 校验和
+            - *.img.txt 构建信息
+            
+            ### 验证文件完整性
+            ```bash
+            sha256sum -c *.zip.sha256
+            ```
           files: |
-            ./output/images/*.img
-            ./output/images/*.img.xz
-            ./output/images/*.img.zip
-            ./output/images/*.sha256sum
-            ./output/images/*.md5sum
+            ./output/images/*.zip
+            ./output/images/*.zip.sha256
           
       # 4. 停止并上传最后状态
       - name: Stop Watchdog & Final Gist Sync

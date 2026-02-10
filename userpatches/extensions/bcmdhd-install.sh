@@ -77,16 +77,24 @@ function post_customize_image__300_optimize_ssh_reduce_lantency() {
 
     if [ -f "$SSHD_CFG" ]; then
         cp "$SSHD_CFG" "${SSHD_CFG}.bak"
-        echo "✅ Backed up $SSHD_CFG to .bak"
-        
-        sed -i \
-          -e 's/^#*\s*UseDNS\s*.*/UseDNS no/' \
-          -e 's/^#*\s*GSSAPIAuthentication\s*.*/GSSAPIAuthentication no/' \
-          -e '/^GSSAPIAuthentication/!a GSSAPIAuthentication no' \
-          -e '/^UseDNS/!a UseDNS no' \
-          "$SSHD_CFG"
-        
-        echo "✅ SSH latency optimization applied to $SSHD_CFG"
+        local KEYS=("UseDNS" "GSSAPIAuthentication" "ClientAliveInterval" "ClientAliveCountMax" "TCPKeepAlive")
+        local VALS=("no" "no" "30" "5" "yes")
+        for i in "${!KEYS[@]}"; do
+            local key="${KEYS[$i]}"
+            local val="${VALS[$i]}"            
+            if grep -q "^#\?\s*$key" "$SSHD_CFG"; then
+                sed -i "s|^#\?\s*$key.*|$key $val|" "$SSHD_CFG"
+            else
+                echo "$key $val" >> "$SSHD_CFG"
+            fi
+        done
+        # Post-process: ensure no duplicates if previously corrupted
+        for key in "${KEYS[@]}"; do
+            if [ $(grep -c "^$key" "$SSHD_CFG") -gt 1 ]; then
+                sed -i "1,$(($(grep -n "^$key" "$SSHD_CFG" | tail -n 1 | cut -f1 -d:)-1)) s/^$key/#RemovedDupe $key/" "$SSHD_CFG"
+            fi
+        done
+        echo "✅ SSH optimization applied successfully"
     else
         echo "⚠️  SSHD config not found at $SSHD_CFG"
     fi

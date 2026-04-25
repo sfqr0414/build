@@ -1,11 +1,14 @@
 name: "Data: Sync board list"
-run-name: Update board list at armbian/os
+run-name: Update board JSON at armbian/armbian.github.io
 
 on:
   push:
     paths:
       - "config/boards/*.*"
     branches: [main]
+
+permissions:
+  contents: read
 
 jobs:
   update-board-list-dispatch:
@@ -17,5 +20,5 @@ jobs:
         uses: peter-evans/repository-dispatch@v4
         with:
           token: ${{ secrets.ACCESS_TOKEN }}
-          repository: armbian/os
-          event-type: "Refresh board list"
+          repository: armbian/armbian.github.io
+          event-type: "Data: Generate build engine inventory"

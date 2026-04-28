@@ -5,7 +5,7 @@ on:
     inputs:
       board: { required: true, default: 'orangepi5-max', type: string }
       kernel: { required: true, default: 'edge', type: string }
-      release: { required: true, default: 'plucky', type: string }
+      release: { required: true, type: choice, options: [vendor, current, edge], default: edge }
       desktop_env: { required: true, default: 'gnome', type: string }
 
 jobs:

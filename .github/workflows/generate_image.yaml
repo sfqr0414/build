@@ -123,10 +123,10 @@ jobs:
       - name: Build OrangePi Image
         run: |
           # 删除冲突的补丁
-          rm -rf ./patch/kernel/archive/rockchip64-6.18/board-helios64-remove-pcie-ep-gpios.patch
-          rm -rf ./patch/kernel/archive/rockchip64-6.18/rk3576-0002-mmc-dw_mmc-rockchip-add-v2-tuning-support.patch
+          # rm -rf ./patch/kernel/archive/rockchip64-6.18/board-helios64-remove-pcie-ep-gpios.patch
+          # rm -rf ./patch/kernel/archive/rockchip64-6.18/rk3576-0002-mmc-dw_mmc-rockchip-add-v2-tuning-support.patch
           # 使用自定板配置，走hack隐藏
-          mv "./config/boards" "./config/boards.bak"
+          # mv "./config/boards" "./config/boards.bak"
           ls -l ./config
           ./compile.sh build \
             BOARD=${{ github.event.inputs.board }} \

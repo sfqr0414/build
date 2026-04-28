@@ -3,7 +3,7 @@
 # 目录防删保护 + 钩子强识别 + Docker路径适配
 
 # ===================== 【核心配置变量】 =====================
-declare -g TARGET_KERNEL_VERSION="6.18.3"
+declare -g TARGET_KERNEL_VERSION="6.18.25"
 declare -g TARGET_KERNEL_MAJOR="${TARGET_KERNEL_VERSION%.*}"
 declare -g KERNEL_MAJOR_X="${TARGET_KERNEL_MAJOR%%.*}"
 declare -g LOCAL_KERNEL_GIT_DIR="${SRC}/cache/downloads/local-kernel-git/linux-${TARGET_KERNEL_VERSION}"

@@ -1,63 +1,13 @@
-diff --git a/arch/arm64/boot/dts/rockchip/rk3588-base.dtsi b/arch/arm64/boot/dts/rockchip/rk3588-base.dtsi
-index e2500e31c..4a1dbbe05 100644
---- a/arch/arm64/boot/dts/rockchip/rk3588-base.dtsi
-+++ b/arch/arm64/boot/dts/rockchip/rk3588-base.dtsi
-@@ -8,6 +8,7 @@
- #include <dt-bindings/interrupt-controller/irq.h>
- #include <dt-bindings/phy/phy.h>
- #include <dt-bindings/power/rk3588-power.h>
-+#include <dt-bindings/soc/rockchip,boot-mode.h>
- #include <dt-bindings/reset/rockchip,rk3588-cru.h>
- #include <dt-bindings/phy/phy.h>
- #include <dt-bindings/ata/ahci.h>
-@@ -767,6 +768,28 @@
- 		#reset-cells = <1>;
- 	};
- 
-+	pmu0_grf: syscon@fd588000 {
-+    	compatible = "rockchip,rk3588-pmu0-grf", "syscon", "simple-mfd";
-+    	reg = <0x0 0xfd588000 0x0 0x2000>;
-+    
-+    	reboot_mode: reboot-mode {
-+    		compatible = "syscon-reboot-mode";
-+    		offset = <0x80>;
-+    		mode-bootloader = <BOOT_BL_DOWNLOAD>;
-+    		mode-charge = <BOOT_CHARGING>;
-+    		mode-fastboot = <BOOT_FASTBOOT>;
-+    		mode-loader = <BOOT_BL_DOWNLOAD>;
-+    		mode-normal = <BOOT_NORMAL>;
-+    		mode-recovery = <BOOT_RECOVERY>;
-+    		mode-ums = <BOOT_UMS>;
-+    		mode-panic = <BOOT_PANIC>;
-+    		mode-watchdog = <BOOT_WATCHDOG>;
-+    		mode-quiescent = <BOOT_QUIESCENT>;
-+    		/* add a mode to capture the ramdump through usb */
-+    		mode-winusb = <BOOT_WINUSB>;
-+    	};
-+    };
-+
- 	i2c0: i2c@fd880000 {
- 		compatible = "rockchip,rk3588-i2c", "rockchip,rk3399-i2c";
- 		reg = <0x0 0xfd880000 0x0 0x1000>;
-@@ -1366,6 +1389,18 @@
- 		resets = <&cru SRST_A_AV1>, <&cru SRST_P_AV1>, <&cru SRST_A_AV1_BIU>, <&cru SRST_P_AV1_BIU>;
- 	};
- 
-+	av1d_mmu: iommu@fdca0000 {
-+		compatible = "rockchip,iommu-av1d";
-+		reg = <0x0 0xfdca0000 0x0 0x600>;
-+		interrupts = <GIC_SPI 109 IRQ_TYPE_LEVEL_HIGH>;
-+		interrupt-names = "irq_av1d_mmu";
-+		clocks = <&cru ACLK_AV1>, <&cru PCLK_AV1>;
-+		clock-names = "aclk", "iface";
-+		#iommu-cells = <0>;
-+		power-domains = <&power RK3588_PD_AV1>;
-+		status = "disabled";
-+	};
-+
- 	vop: vop@fdd90000 {
- 		compatible = "rockchip,rk3588-vop";
- 		reg = <0x0 0xfdd90000 0x0 0x4200>, <0x0 0xfdd95000 0x0 0x1000>;
+From f3001367a13a6b66bf452fd9d1818dc40f931f42 Mon Sep 17 00:00:00 2001
+From: Your Name <you@example.com>
+Date: Tue, 28 Apr 2026 12:44:25 +0800
+Subject: [PATCH] enable wifi with bcmdhd in opi5-max, opi5-ultra
+
+---
+ .../rockchip/rk3588-orangepi-5-compact.dtsi   | 78 +++++++++++++++++++
+ .../boot/dts/rockchip/rk3588-orangepi-5.dtsi  |  8 +-
+ 2 files changed, 79 insertions(+), 7 deletions(-)
+
 diff --git a/arch/arm64/boot/dts/rockchip/rk3588-orangepi-5-compact.dtsi b/arch/arm64/boot/dts/rockchip/rk3588-orangepi-5-compact.dtsi
 index 9343dfc86..09f0e85a2 100644
 --- a/arch/arm64/boot/dts/rockchip/rk3588-orangepi-5-compact.dtsi
@@ -159,97 +109,8 @@ index 9343dfc86..09f0e85a2 100644
 +		<2 RK_PB1 2 &pcfg_pull_up>;
 +};
 \ No newline at end of file
-diff --git a/arch/arm64/boot/dts/rockchip/rk3588-orangepi-5-max.dts b/arch/arm64/boot/dts/rockchip/rk3588-orangepi-5-max.dts
-index 8b1d35760..1328fbc2f 100644
---- a/arch/arm64/boot/dts/rockchip/rk3588-orangepi-5-max.dts
-+++ b/arch/arm64/boot/dts/rockchip/rk3588-orangepi-5-max.dts
-@@ -123,3 +123,83 @@
- 		remote-endpoint = <&hdmi1_in_vp1>;
- 	};
- };
-+
-+&vpu121 {
-+	vpu-supply = <&vdd_vdenc_s0>;
-+	status = "okay";
-+};
-+
-+&vpu121_mmu {
-+	status = "okay";
-+};
-+
-+&av1d {
-+	vpu-supply = <&vdd_vdenc_s0>;
-+	status = "okay";
-+};
-+
-+&av1d_mmu {
-+	status = "okay";
-+};
-+
-+&vepu121_0 {
-+	vpu-supply = <&vdd_vdenc_s0>;
-+	status = "okay";
-+};
-+
-+&vepu121_0_mmu {
-+	status = "okay";
-+};
-+
-+&vepu121_1 {
-+	vpu-supply = <&vdd_vdenc_s0>;
-+	status = "okay";
-+};
-+
-+&vepu121_1_mmu {
-+	status = "okay";
-+};
-+
-+&vepu121_2 {
-+	vpu-supply = <&vdd_vdenc_s0>;
-+	status = "okay";
-+};
-+
-+&vepu121_2_mmu {
-+	status = "okay";
-+};
-+
-+&vepu121_3 {
-+	vpu-supply = <&vdd_vdenc_s0>;
-+	status = "okay";
-+};
-+
-+&vepu121_3_mmu {
-+	status = "okay";
-+};
-+
-+&pmu {
-+	pmu_io_domains: pmu-io-domains {
-+		compatible = "rockchip,rk3588-pmu-io-domains";
-+		pmuio1-supply = <&vcc_1v8_s0>;
-+		pmuio2-supply = <&vcc_1v8_s0>;
-+		vccio1-supply = <&avcc_1v8_s0>;
-+		vccio2-supply = <&vcc_1v8_s0>;
-+		vccio3-supply = <&vcc_3v3_s0>;
-+		vccio4-supply = <&vcc_1v8_s0>;
-+		vccio5-supply = <&vcc_3v3_s0>;
-+		vccio6-supply = <&vcc_1v8_s0>;
-+		vccio7-supply = <&vcc_3v3_s0>;
-+		status = "okay";
-+	};
-+};
-+
-+&i2c1 {
-+	pinctrl-0 = <&i2c1m4_xfer>; 
-+};
-+
-+&spi2 {
-+    pmic@0 {
-+        pinctrl-0 = <&pmic_pins>;
-+    };
-+};
-\ No newline at end of file
 diff --git a/arch/arm64/boot/dts/rockchip/rk3588-orangepi-5.dtsi b/arch/arm64/boot/dts/rockchip/rk3588-orangepi-5.dtsi
-index 3bceee948..5e142e02d 100644
+index 3bceee948..219ab33c4 100644
 --- a/arch/arm64/boot/dts/rockchip/rk3588-orangepi-5.dtsi
 +++ b/arch/arm64/boot/dts/rockchip/rk3588-orangepi-5.dtsi
 @@ -16,6 +16,7 @@
@@ -274,56 +135,5 @@ index 3bceee948..5e142e02d 100644
  	analog_sound: sound {
  		compatible = "simple-audio-card";
  		simple-audio-card,name = "Analog";
-@@ -371,11 +365,11 @@
- };
- 
- &pd_gpu {
--	domain-supply = <&vdd_gpu_s0>;
-+	/* domain-supply removed to avoid PMU <-> PMIC deferred probe cycle */
- };
- 
- &pd_npu {
--	domain-supply = <&vdd_npu_s0>;
-+	/* domain-supply removed to avoid PMU <-> PMIC deferred probe cycle */
- };
- 
- &rknn_core_0 {
-@@ -481,10 +475,10 @@
- 		vcc8-supply = <&vcc5v0_sys>;
- 		vcc9-supply = <&vcc5v0_sys>;
- 		vcc10-supply = <&vcc5v0_sys>;
--		vcc11-supply = <&vcc_2v0_pldo_s3>;
-+		vcc11-supply = <&vcc5v0_sys>;
- 		vcc12-supply = <&vcc5v0_sys>;
--		vcc13-supply = <&vdd2_ddr_s3>;
--		vcc14-supply = <&vdd2_ddr_s3>;
-+		vcc13-supply = <&vcc5v0_sys>;
-+		vcc14-supply = <&vcc5v0_sys>;
- 		vcca-supply = <&vcc5v0_sys>;
- 
- 		gpio-controller;
-diff --git a/include/dt-bindings/soc/rockchip,boot-mode.h b/include/dt-bindings/soc/rockchip,boot-mode.h
-index 4b0914c09..a0f63a040 100644
---- a/include/dt-bindings/soc/rockchip,boot-mode.h
-+++ b/include/dt-bindings/soc/rockchip,boot-mode.h
-@@ -10,7 +10,19 @@
- #define BOOT_BL_DOWNLOAD	(REBOOT_FLAG + 1)
- /* enter recovery */
- #define BOOT_RECOVERY		(REBOOT_FLAG + 3)
-- /* enter fastboot mode */
-+/* reboot by panic */
-+#define BOOT_PANIC		(REBOOT_FLAG + 7)
-+/* reboot by watchdog */
-+#define BOOT_WATCHDOG		(REBOOT_FLAG + 8)
-+/* enter fastboot mode */
- #define BOOT_FASTBOOT		(REBOOT_FLAG + 9)
-+/* enter charging mode */
-+#define BOOT_CHARGING		(REBOOT_FLAG + 11)
-+/* enter usb mass storage mode */
-+#define BOOT_UMS		(REBOOT_FLAG + 12)
-+/* reboot system quiescent */
-+#define BOOT_QUIESCENT		(REBOOT_FLAG + 14)
-+/* reboot by panic and capture ramdump in uboot through usb */
-+#define BOOT_WINUSB		(REBOOT_FLAG + 15)
- 
- #endif
+-- 
+2.34.1
